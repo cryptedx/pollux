@@ -1,0 +1,13 @@
+<Solution>
+  <Configurations>
+    <Platform Name="ARM64" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/Pollux.App/Pollux.App.csproj" />
+    <Project Path="src/Pollux.Core/Pollux.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Pollux.Core.Tests/Pollux.Core.Tests.csproj" />
+  </Folder>
+</Solution>

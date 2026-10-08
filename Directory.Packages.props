@@ -1,0 +1,7 @@
+<Project>
+  <!-- Every dependency is listed here and nowhere else. New entries need an explicit proposal (spec: "Dependencies"). -->
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+  </ItemGroup>
+</Project>

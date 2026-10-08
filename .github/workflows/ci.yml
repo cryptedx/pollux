@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            rid: win-x64
+          - platform: ARM64
+            rid: win-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Test core
+        if: matrix.platform == 'x64'
+        run: dotnet test --project tests/Pollux.Core.Tests -c Release
+
+      - name: Publish (Native AOT)
+        run: dotnet publish src/Pollux.App -c Release -p:Platform=${{ matrix.platform }} -r ${{ matrix.rid }} -o artifacts/${{ matrix.rid }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pollux-${{ matrix.rid }}
+          path: artifacts/${{ matrix.rid }}
+          retention-days: 7
