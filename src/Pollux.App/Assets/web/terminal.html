@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://pollux.assets; script-src 'self' 'unsafe-inline' https://pollux.assets; style-src 'self' 'unsafe-inline' https://pollux.assets">
+<link rel="stylesheet" href="xterm/xterm.css">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  #term { position: absolute; inset: 4px 0 0 10px; }
+  .xterm .xterm-viewport { overflow-y: auto; }
+</style>
+</head>
+<body>
+<div id="term"></div>
+<script src="xterm/xterm.js"></script>
+<script src="xterm/addon-fit.js"></script>
+<script>
+  const host = window.chrome.webview;
+  const send = m => host.postMessage(JSON.stringify(m));
+  const dark = { background: '#1c1c1c', foreground: '#e6e6e6', cursor: '#4cc2ff', selectionBackground: '#4cc2ff55' };
+  const light = { background: '#fafafa', foreground: '#1b1b1b', cursor: '#0f6cbd', selectionBackground: '#0f6cbd33', black: '#1b1b1b', white: '#8a8a8a', brightWhite: '#6b6b6b', yellow: '#9a6700', brightYellow: '#7d5800' };
+  const term = new Terminal({ fontFamily: "'Cascadia Mono', Consolas, monospace", fontSize: 13, cursorBlink: true, allowProposedApi: false, scrollback: 5000, theme: dark });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById('term'));
+  fit.fit();
+  term.onData(d => send({ type: 'input', data: d }));
+  term.onResize(s => send({ type: 'resize', cols: s.cols, rows: s.rows }));
+  // Keys the host handles: Ctrl+ö / Ctrl+` toggle the panel, Ctrl+Shift+C/V copy/paste like Windows Terminal.
+  term.attachCustomKeyEventHandler(e => {
+    if (e.type !== 'keydown') return true;
+    if (e.ctrlKey && !e.altKey && (e.key === 'ö' || e.key === 'Ö' || e.key === '`')) { send({ type: 'toggle' }); return false; }
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'c') { if (term.hasSelection()) navigator.clipboard.writeText(term.getSelection()); return false; }
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'v') { navigator.clipboard.readText().then(t => send({ type: 'input', data: t })); return false; }
+    if (e.ctrlKey && e.key.toLowerCase() === 'c' && term.hasSelection()) { navigator.clipboard.writeText(term.getSelection()); term.clearSelection(); return false; }
+    return true;
+  });
+  new ResizeObserver(() => { try { fit.fit(); } catch {} }).observe(document.getElementById('term'));
+  host.addEventListener('message', e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'data') term.write(m.data);
+    else if (m.type === 'theme') { term.options.theme = m.dark ? dark : light; document.body.style.background = m.dark ? dark.background : light.background; }
+    else if (m.type === 'focus') term.focus();
+    else if (m.type === 'fontSize') { term.options.fontSize = m.size; fit.fit(); }
+  });
+  send({ type: 'ready', cols: term.cols, rows: term.rows });
+</script>
+</body>
+</html>

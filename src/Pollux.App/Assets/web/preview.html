@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://pollux.assets; script-src 'self' 'unsafe-inline' https://pollux.assets; style-src 'self' 'unsafe-inline' https://pollux.assets; font-src https://pollux.assets data:; worker-src blob: https://pollux.assets">
+<link rel="stylesheet" href="monaco/vs/editor/editor.main.css">
+<style>html, body, #editor { margin: 0; height: 100%; width: 100%; overflow: hidden; }</style>
+</head>
+<body>
+<div id="editor"></div>
+<script src="monaco/vs/loader.js"></script>
+<script>
+  const host = window.chrome.webview;
+  let editor = null, pending = null;
+  window.MonacoEnvironment = { getWorkerUrl: () => 'monaco/vs/editor/editor.worker.js' };
+  require.config({ paths: { vs: 'monaco/vs' } });
+  require(['vs/editor/editor.main'], () => {
+    editor = monaco.editor.create(document.getElementById('editor'), {
+      readOnly: true, domReadOnly: true, automaticLayout: true, minimap: { enabled: true }, fontFamily: "'Cascadia Mono', Consolas, monospace",
+      fontSize: 13, scrollBeyondLastLine: false, renderLineHighlight: 'none', contextmenu: false, occurrencesHighlight: 'off',
+      unicodeHighlight: { ambiguousCharacters: false }, wordWrap: 'off',
+    });
+    if (pending) show(pending);
+    host.postMessage(JSON.stringify({ type: 'ready' }));
+  });
+  function show(m) {
+    monaco.editor.setTheme(m.dark ? 'vs-dark' : 'vs');
+    const lang = monaco.languages.getLanguages().find(l => (l.extensions || []).includes('.' + (m.ext || '').toLowerCase()));
+    const old = editor.getModel();
+    editor.setModel(monaco.editor.createModel(m.text || '', lang ? lang.id : 'plaintext'));
+    if (old) old.dispose();
+    editor.updateOptions({ wordWrap: m.wrap ? 'on' : 'off' });
+  }
+  host.addEventListener('message', e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'show') { if (editor) show(m); else pending = m; }
+  });
+</script>
+</body>
+</html>

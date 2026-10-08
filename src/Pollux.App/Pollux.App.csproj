@@ -10,6 +10,11 @@
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <UseWinUI>true</UseWinUI>
     <WinUISDKReferences>false</WinUISDKReferences>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationIcon>Assets\pollux.ico</ApplicationIcon>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <Version>1.0.0</Version>
+    <Product>Pollux</Product>
 
     <!-- Unpackaged, self-contained, per-user install without admin (ADR 0002). -->
     <WindowsPackageType>None</WindowsPackageType>
@@ -17,20 +22,29 @@
     <SelfContained>true</SelfContained>
     <!-- Needed even unpackaged: generates Pollux.pri and copies .xbf/.pri into the publish output. -->
     <EnableMsixTooling>true</EnableMsixTooling>
+    <!-- Ship only English and German UI resources of the frameworks (keeps the install folder smaller). -->
+    <SatelliteResourceLanguages>en;de</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <!-- Native AOT + trimming for startup time (ADR 0002). -->
   <PropertyGroup Condition="'$(Configuration)' != 'Debug'">
     <PublishAot>true</PublishAot>
     <PublishTrimmed>true</PublishTrimmed>
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
   </PropertyGroup>
 
   <ItemGroup>
     <Manifest Include="$(ApplicationManifest)" />
+    <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Base" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.DWrite" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
   </ItemGroup>
 

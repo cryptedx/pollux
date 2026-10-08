@@ -1,7 +1,14 @@
 <Project>
   <!-- Every dependency is listed here and nowhere else. New entries need an explicit proposal (spec: "Dependencies"). -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <!-- Windows App SDK components Pollux uses. The AI/ML/Search/Widgets parts of the meta package are left out on purpose:
+         unused, ~40 MB of onnxruntime/DirectML, and AI features are out of scope (ADR 0001). -->
+    <PackageVersion Include="Microsoft.WindowsAppSDK.Base" Version="2.0.4" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.Foundation" Version="2.3.12" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.9" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.DWrite" Version="2.1.0" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.Runtime" Version="2.5.1" />
     <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
   </ItemGroup>
 </Project>

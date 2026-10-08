@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://pollux.assets; script-src 'self' 'unsafe-inline' https://pollux.assets; style-src 'self' 'unsafe-inline' https://pollux.assets; font-src https://pollux.assets data:; worker-src blob: https://pollux.assets; connect-src https://pollux.assets">
+<link rel="stylesheet" href="monaco/vs/editor/editor.main.css">
+<style>
+  html, body, #editor { margin: 0; height: 100%; width: 100%; overflow: hidden; background: transparent; }
+</style>
+</head>
+<body>
+<div id="editor"></div>
+<script>
+  window.addEventListener('error', e => window.chrome.webview.postMessage(JSON.stringify({ type: 'error', message: (e.message || '') + ' @ ' + (e.filename || '') + ':' + (e.lineno || '') })));
+  window.addEventListener('unhandledrejection', e => window.chrome.webview.postMessage(JSON.stringify({ type: 'error', message: 'promise: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason) })));
+</script>
+<script src="monaco/vs/loader.js"></script>
+<script>
+  const host = window.chrome.webview;
+  let editor = null, knownTags = [], suppress = false;
+  window.MonacoEnvironment = { getWorkerUrl: () => 'monaco/vs/editor/editor.worker.js' };
+  require.config({ paths: { vs: 'monaco/vs' } });
+  require.onError = err => host.postMessage(JSON.stringify({ type: 'error', message: 'require: ' + (err && (err.stack || err.message) || err) }));
+  require(['vs/editor/editor.main'], () => {
+    monaco.editor.defineTheme('pollux-dark', { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#1f1f1f' } });
+    monaco.editor.defineTheme('pollux-light', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#fbfbfb' } });
+    editor = monaco.editor.create(document.getElementById('editor'), {
+      language: 'markdown', automaticLayout: true, minimap: { enabled: false }, fontFamily: "'Cascadia Mono', Consolas, monospace",
+      fontSize: 14, wordWrap: 'on', lineNumbers: 'off', glyphMargin: false, folding: true, renderLineHighlight: 'none',
+      scrollBeyondLastLine: false, padding: { top: 16, bottom: 16 }, quickSuggestions: { other: true, comments: false, strings: false },
+      suggestOnTriggerCharacters: true, occurrencesHighlight: 'off', unicodeHighlight: { ambiguousCharacters: false },
+    });
+    editor.onDidChangeModelContent(() => { if (!suppress) host.postMessage(JSON.stringify({ type: 'changed', text: editor.getValue() })); });
+    // Host-level shortcuts while the editor has focus.
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyN, () => host.postMessage(JSON.stringify({ type: 'new' })));
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => host.postMessage(JSON.stringify({ type: 'save' })));
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, () => host.postMessage(JSON.stringify({ type: 'focusSearch' })));
+    editor.addCommand(monaco.KeyCode.Escape, () => host.postMessage(JSON.stringify({ type: 'escape' })), '!suggestWidgetVisible && !findWidgetVisible');
+    monaco.languages.registerCompletionItemProvider('markdown', {
+      triggerCharacters: ['#'],
+      provideCompletionItems: (model, position) => {
+        const line = model.getLineContent(position.lineNumber).substring(0, position.column - 1);
+        const m = line.match(/(^|[\s(\[,])#([\p{L}\p{N}_\-/]*)$/u);
+        if (!m) return { suggestions: [] };
+        const range = new monaco.Range(position.lineNumber, position.column - m[2].length, position.lineNumber, position.column);
+        return { suggestions: knownTags.map(t => ({ label: '#' + t, insertText: t, kind: monaco.languages.CompletionItemKind.Keyword, range })) };
+      }
+    });
+    host.postMessage(JSON.stringify({ type: 'ready' }));
+  });
+  host.addEventListener('message', e => {
+    const m = JSON.parse(e.data);
+    if (!editor) return;
+    if (m.type === 'load') {
+      suppress = true;
+      editor.setValue(m.text || '');
+      suppress = false;
+      if (m.cursorEnd) { const l = editor.getModel().getLineCount(); editor.setPosition({ lineNumber: l, column: editor.getModel().getLineMaxColumn(l) }); }
+      editor.focus();
+    }
+    if (m.type === 'options') {
+      monaco.editor.setTheme(m.dark ? 'pollux-dark' : 'pollux-light');
+      editor.updateOptions({ fontSize: m.fontSize || 14, wordWrap: m.wordWrap ? 'on' : 'off' });
+      knownTags = m.tags || [];
+    }
+    if (m.type === 'focus') editor.focus();
+  });
+</script>
+</body>
+</html>

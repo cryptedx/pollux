@@ -1,0 +1,9 @@
+[*.cs]
+# UI objects live as long as their window/process; disposal is handled by lifecycle, not IDisposable.
+dotnet_diagnostic.CA1001.severity = none
+# XAML event handlers must be instance methods.
+dotnet_diagnostic.CA1822.severity = none
+# Win32 calls whose result is irrelevant (best effort UI plumbing).
+dotnet_diagnostic.CA1806.severity = none
+dotnet_diagnostic.CA1826.severity = none
+dotnet_diagnostic.CA1859.severity = none

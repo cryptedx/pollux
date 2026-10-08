@@ -38,6 +38,10 @@ _Avoid_: Search (when only the current location is meant)
 Fuzzy lookup of files and folders across all Index Roots, opened from anywhere.
 _Avoid_: Global search, find
 
+**Quick Look**:
+A temporary full-size preview of the selected entry, opened and closed with Space.
+_Avoid_: Preview pane, viewer
+
 **Index Root**:
 A folder whose contents Pollux keeps indexed for Quick Search.
 _Avoid_: Search scope, watched folder

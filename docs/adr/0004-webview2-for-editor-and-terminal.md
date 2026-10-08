@@ -6,3 +6,5 @@ The Note editor is Monaco (VS Code's editor) and the embedded terminal is xterm.
 
 - WebView2 is created on first use, never at startup, so it does not affect launch time.
 - These are the first external dependencies; updates to them are manual and reviewed.
+- WebView2 runs with a private profile in `%LocalAppData%\Pollux\WebView2`, Edge background networking switched off (`--disable-background-networking`, no component updates, no SmartScreen/domain reliability/pings), all navigation outside `https://pollux.assets/` (and `https://pollux.preview/` for previewed local files) blocked, and every other web request answered with 403.
+- Monaco 0.57's AMD build loads its language workers eagerly, so the complete `min/vs` folder (~25 MB) is vendored; trimming it broke loading.
