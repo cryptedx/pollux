@@ -108,8 +108,10 @@ internal sealed partial class MainWindow : Window, IPaneHost
         if (s.Maximized && AppWindow.Presenter is OverlappedPresenter p) p.Maximize();
     }
 
+    /// <summary>True if the saved top-left corner (plus some margin) is on a connected monitor. Win32 instead of
+    /// DisplayArea.FindAll(), whose list projection throws "ClassFactory cannot supply requested class" here.</summary>
     private static bool IsOnScreen(int x, int y) =>
-        DisplayArea.FindAll().Any(d => x >= d.OuterBounds.X && y >= d.OuterBounds.Y && x < d.OuterBounds.X + d.OuterBounds.Width - 50 && y < d.OuterBounds.Y + d.OuterBounds.Height - 50);
+        Interop.Native.MonitorFromPoint(new Interop.Native.POINT { X = x + 50, Y = y + 20 }, Interop.Native.MONITOR_DEFAULTTONULL) != 0;
 
     public WindowSession ToSession()
     {

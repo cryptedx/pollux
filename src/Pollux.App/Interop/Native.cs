@@ -76,6 +76,11 @@ internal static unsafe partial class Native
     [LibraryImport("user32.dll")]
     public static partial uint GetDpiForWindow(nint hwnd);
 
+    [LibraryImport("user32.dll")]
+    public static partial nint MonitorFromPoint(POINT pt, uint flags);
+
+    public const uint MONITOR_DEFAULTTONULL = 0;
+
     // ---- popup menu ----
     [LibraryImport("user32.dll")]
     public static partial nint CreatePopupMenu();
