@@ -13,7 +13,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationIcon>Assets\pollux.ico</ApplicationIcon>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>1.0.1</Version>
+    <Version>1.1.0</Version>
     <Product>Pollux</Product>
 
     <!-- Unpackaged, self-contained, per-user install without admin (ADR 0002). -->

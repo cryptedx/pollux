@@ -19,6 +19,8 @@ It is made for developers who work in VS Code and with agentic coding tools.
 | **Filter** | `Ctrl+F` filters the current folder live by substring or word initials (`dbp` → `Directory.Build.props`) |
 | **Command palette** | `Ctrl+Shift+P` runs any command. All keys can be remapped in `keybindings.json` (VS Code format) or on the Settings page |
 | **Embedded terminal** | `Ctrl+ö` toggles a PowerShell, pwsh or cmd panel (ConPTY + xterm.js) that opens in the active folder. `Ctrl+Alt+T` opens Windows Terminal instead |
+| **Copy & move queue** | `F5`/`F6`, paste and drag & drop all run in a Pollux queue. A progress bar in the status bar shows speed and lets you pause, resume or cancel. Conflicts ask *Replace / Keep both / Skip* (optionally for the whole job) or follow a fixed rule. Partial files are removed if you cancel. The classic Windows dialogs are still available as a setting (`files.operationEngine`) |
+| **Preview pane** | `Alt+P` shows the selection next to the panes: code with highlighting, images, PDFs, hex for binaries and a summary for folders. It updates while you arrow through the list |
 | **Quick Look** | `Space` previews the selection: images, code with syntax highlighting (Monaco), PDFs, a hex view for binaries, and a summary for folders |
 | **Notes** | Plain Markdown files edited with Monaco, so VS Code keys work, including multi-cursor. Notes are saved automatically and named after their first line. Tags come from `#tags` or front matter. `Win+Alt+N` creates a new note from anywhere |
 | **Downloads Stack** | Left-click the tray icon or press `Win+Alt+D` to see your newest downloads, like a macOS Dock stack. You can drag files out of it |

@@ -4,6 +4,7 @@ using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Pollux.App.Services;
@@ -34,6 +35,9 @@ internal sealed partial class MainWindow : Window, IPaneHost
     private CancellationTokenSource? _searchCts;
     private Core.Workspaces.Workspace? _workspace;
     private PreviewController? _preview;
+    private PreviewController? _previewPane;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _previewPaneTimer;
+    private string? _previewPanePath;
     private TerminalController? _terminal;
     private string? _lastTerminalFolder;
 
@@ -56,6 +60,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         AdminBadge.Visibility = IsElevated ? Visibility.Visible : Visibility.Collapsed;
         if (IsElevated) Title = "Pollux (Admin)";
         UpdatesWindow.ResultChanged += OnUpdatesChanged;
+        _app.Transfers.Changed += OnTransferChanged;
         ApplyWindowBounds(session);
         _dual = session.DualPane;
         _sidebar = session.SidebarVisible;
@@ -145,10 +150,17 @@ internal sealed partial class MainWindow : Window, IPaneHost
     /// <summary>Runs on every real close (also Close() from code, which skips AppWindow.Closing).</summary>
     private void Cleanup()
     {
+        _closed = true;
+        lock (_pendingAsks)
+        {
+            foreach (var t in _pendingAsks.ToList()) t.TrySetResult(new Core.Operations.ConflictDecision(Core.Operations.ConflictChoice.Cancel, false));
+        }
+
         Services.SettingsChanged -= OnSettingsChanged;
         Services.PlacesChanged -= RenderSidebar;
         Drives.Changed -= OnDrivesChanged;
         UpdatesWindow.ResultChanged -= OnUpdatesChanged;
+        _app.Transfers.Changed -= OnTransferChanged;
         _statsTimer.Stop();
         _stats?.Dispose();
         _terminal?.Dispose();
@@ -225,6 +237,10 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
     private void ApplyLayout()
     {
+        var preview = Services.Settings.Preview;
+        PreviewPane.Visibility = preview.PaneVisible ? Visibility.Visible : Visibility.Collapsed;
+        PreviewPaneColumn.Width = preview.PaneVisible ? new GridLength(Math.Clamp(preview.PaneWidth, 220, 1200)) : new GridLength(0);
+        if (preview.PaneVisible) SchedulePreviewPane();
         SecondPaneColumn.Width = _dual ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
         Pane2.Visibility = _dual ? Visibility.Visible : Visibility.Collapsed;
         PanesGrid.ColumnSpacing = _dual ? 6 : 0;
@@ -276,6 +292,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         if (sel.Count > 1) text = $"{sel.Count} selected · {Format.Size(sel.Where(i => !i.IsDirectory).Sum(i => i.Entry.Size))}";
         else if (sel.Count == 1 && !sel[0].IsDirectory) text += $" · {Format.Size(sel[0].Entry.Size)}";
         SelectionText.Text = Services.Settings.StatusBar.Selection ? text : "";
+        SchedulePreviewPane();
         FollowPaneInTerminal();
         UpdateDisk();
     }
@@ -621,6 +638,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "nav.desktop": p.Navigate(KnownFolders.Desktop); break;
             case "file.open": p.OpenSelected(); break;
             case "file.preview": TogglePreview(); break;
+            case "view.togglePreviewPane": Services.Settings.Preview.PaneVisible = !Services.Settings.Preview.PaneVisible; Services.SaveSettings(); break;
             case "file.openWith": ForSingle(Shell.OpenWith); break;
             case "file.rename": _ = RenameAsync(); break;
             case "file.delete": Delete(permanent: false); break;
@@ -639,6 +657,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "file.copyName": CopyText(string.Join(Environment.NewLine, TargetPaths().Select(Path.GetFileName))); break;
             case "file.selectAll": p.SelectAll(); break;
             case "file.shellMenu": ShowShellMenu(); break;
+            case "transfers.show": TransfersBadge.Visibility = Visibility.Visible; RenderTransfersPanel(); FlyoutBase.ShowAttachedFlyout(TransfersBadge); break;
             case "file.showInExplorer": Shell.RevealInExplorer(p.SelectedPaths.FirstOrDefault() ?? p.Folder ?? ""); break;
             case "bookmark.add": AddBookmark(p.Folder); break;
             case "bookmark.addSelection": AddBookmark(p.SelectedPaths.FirstOrDefault() ?? p.Folder); break;
@@ -773,6 +792,217 @@ internal sealed partial class MainWindow : Window, IPaneHost
         _terminal.ChangeDirectory(f);
     }
 
+    // ---------------- transfers (copy / move) ----------------
+
+    private readonly SemaphoreSlim _dialogGate = new(1, 1);
+    private readonly List<TaskCompletionSource<Core.Operations.ConflictDecision>> _pendingAsks = [];
+    private bool _closed;
+    private bool _transferUiPending;
+
+    /// <summary>Copies or moves through Pollux's queue (progress in the status bar), or through Windows when configured.</summary>
+    public void Transfer(bool move, IReadOnlyList<string> sources, string targetDirectory)
+    {
+        if (sources.Count == 0) return;
+        if (string.Equals(Services.Settings.Files.OperationEngine, "windows", StringComparison.OrdinalIgnoreCase))
+        {
+            if (move) Shell.Move(Hwnd, sources, targetDirectory);
+            else Shell.Copy(Hwnd, sources, targetDirectory);
+            foreach (var p in _panes) p.Refresh();
+            return;
+        }
+
+        var request = new Core.Operations.TransferRequest(move ? Core.Operations.TransferKind.Move : Core.Operations.TransferKind.Copy, sources, targetDirectory, Services.Settings.Files.ConflictPolicy);
+        _app.Transfers.Enqueue(request, AskConflictAsync);
+    }
+
+    /// <summary>Called from the transfer worker; shows one conflict dialog at a time on this window.</summary>
+    private Task<Core.Operations.ConflictDecision> AskConflictAsync(Core.Operations.TransferConflict c)
+    {
+        var tcs = new TaskCompletionSource<Core.Operations.ConflictDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new Core.Operations.ConflictDecision(Core.Operations.ConflictChoice.Cancel, false);
+        if (_closed)
+        {
+            // The window that started the job is gone: cancel the job instead of blocking the shared queue.
+            tcs.TrySetResult(cancelled);
+            return tcs.Task;
+        }
+
+        lock (_pendingAsks) _pendingAsks.Add(tcs);
+        tcs.Task.ContinueWith(_ => { lock (_pendingAsks) _pendingAsks.Remove(tcs); }, TaskScheduler.Default);
+        var queued = DispatcherQueue.TryEnqueue(async () =>
+        {
+            await _dialogGate.WaitAsync();
+            try
+            {
+                if (IsHidden) ShowWindow();
+                var all = new CheckBox { Content = "Do this for all conflicts in this job" };
+                var info = new TextBlock { FontFamily = Mono, FontSize = 12, TextWrapping = TextWrapping.Wrap };
+                info.Text = c.IsDirectory
+                    ? $"A file named \"{Path.GetFileName(c.TargetPath)}\" is in the way of a folder."
+                    : $"{Path.GetFileName(c.TargetPath)} already exists in {Path.GetDirectoryName(c.TargetPath)}\n\n" +
+                      $"new:      {Format.Size(c.SourceSize),10}  {c.SourceModified:yyyy-MM-dd HH:mm}{(c.SourceModified > c.TargetModified ? "  (newer)" : "")}\n" +
+                      $"existing: {Format.Size(c.TargetSize),10}  {c.TargetModified:yyyy-MM-dd HH:mm}{(c.TargetModified > c.SourceModified ? "  (newer)" : "")}";
+                var content = new StackPanel { Spacing = 12 };
+                content.Children.Add(info);
+                content.Children.Add(all);
+                var dialog = new ContentDialog
+                {
+                    Title = "File already exists",
+                    Content = content,
+                    PrimaryButtonText = "Replace",
+                    SecondaryButtonText = "Keep both",
+                    CloseButtonText = "Skip",
+                    DefaultButton = ContentDialogButton.Close,
+                    XamlRoot = Content.XamlRoot,
+                    RequestedTheme = Theme.Current,
+                };
+                var cancel = new HyperlinkButton { Content = "Cancel the whole job", Padding = new Thickness(0) };
+                content.Children.Add(cancel);
+                var cancelled = false;
+                cancel.Click += (_, _) => { cancelled = true; dialog.Hide(); };
+                var result = await dialog.ShowAsync();
+                var choice = cancelled ? Core.Operations.ConflictChoice.Cancel : result switch
+                {
+                    ContentDialogResult.Primary => Core.Operations.ConflictChoice.Overwrite,
+                    ContentDialogResult.Secondary => Core.Operations.ConflictChoice.Rename,
+                    _ => Core.Operations.ConflictChoice.Skip,
+                };
+                tcs.TrySetResult(new Core.Operations.ConflictDecision(choice, all.IsChecked == true));
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+            {
+                tcs.TrySetResult(new Core.Operations.ConflictDecision(Core.Operations.ConflictChoice.Skip, false));
+            }
+            finally
+            {
+                _dialogGate.Release();
+            }
+        });
+        if (!queued) tcs.TrySetResult(cancelled);
+        return tcs.Task;
+    }
+
+    /// <summary>Worker-thread callback; coalesces UI updates to at most ~10 per second.</summary>
+    private void OnTransferChanged(Core.Operations.TransferJob job)
+    {
+        if (job.IsFinished)
+        {
+            DispatcherQueue.TryEnqueue(() => OnTransferFinished(job));
+        }
+
+        if (_transferUiPending) return;
+        _transferUiPending = true;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, async () =>
+        {
+            await Task.Delay(100);
+            _transferUiPending = false;
+            UpdateTransfersUi();
+        });
+    }
+
+    private readonly HashSet<int> _announced = [];
+
+    private void OnTransferFinished(Core.Operations.TransferJob job)
+    {
+        UpdateTransfersUi();
+        foreach (var p in _panes)
+        {
+            var f = p.Folder;
+            if (f is null) continue;
+            if (string.Equals(f, job.Request.TargetDirectory, StringComparison.OrdinalIgnoreCase) || job.Request.Sources.Any(s => string.Equals(Path.GetDirectoryName(s), f, StringComparison.OrdinalIgnoreCase))) p.Refresh();
+        }
+
+        if (!_announced.Add(job.Id) || _app.LastActive != this) return;
+        var errors = job.Errors.Count;
+        ShowToast(job.State switch
+        {
+            Core.Operations.TransferState.Completed when errors == 0 => $"✓ {job.Title}",
+            Core.Operations.TransferState.Completed => $"⚠ {job.Title}: {errors} problem(s) — see transfers",
+            Core.Operations.TransferState.Cancelled => $"Cancelled: {job.Title}",
+            _ => $"✗ {job.Title}: {job.Error}",
+        }, errors > 0 || job.State == Core.Operations.TransferState.Failed ? 6 : 3);
+    }
+
+    private void UpdateTransfersUi()
+    {
+        var jobs = _app.Transfers.Jobs;
+        var active = jobs.Where(j => !j.IsFinished).ToList();
+        var visible = jobs.Count > 0 && (active.Count > 0 || jobs.Any(j => j.Errors.Count > 0 || j.State == Core.Operations.TransferState.Failed));
+        TransfersBadge.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (active.FirstOrDefault() is { } current)
+        {
+            var p = current.Progress;
+            TransfersBar.Value = p.Fraction;
+            TransfersBar.IsIndeterminate = p.TotalFiles == 0;
+            TransfersBar.ShowPaused = current.State == Core.Operations.TransferState.Paused;
+            var queued = active.Count > 1 ? $" +{active.Count - 1}" : "";
+            TransfersText.Text = current.State == Core.Operations.TransferState.Paused
+                ? $"paused {p.Fraction:P0}{queued}"
+                : $"{(current.Request.Kind == Core.Operations.TransferKind.Copy ? "copy" : "move")} {p.Fraction:P0} · {Format.Size((long)p.BytesPerSecond)}/s{queued}";
+        }
+        else
+        {
+            TransfersBar.Value = 1;
+            TransfersBar.IsIndeterminate = false;
+            TransfersText.Text = "⚠ problems";
+        }
+
+        if (TransfersFlyout.IsOpen) RenderTransfersPanel();
+    }
+
+    private void TransfersBadge_Tapped(object sender, TappedRoutedEventArgs e)
+    {
+        RenderTransfersPanel();
+        FlyoutBase.ShowAttachedFlyout(TransfersBadge);
+    }
+
+    private void RenderTransfersPanel()
+    {
+        TransfersPanel.Children.Clear();
+        foreach (var job in _app.Transfers.Jobs.AsEnumerable().Reverse().Take(8))
+        {
+            var p = job.Progress;
+            var box = new StackPanel { Spacing = 3 };
+            var head = new Grid();
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            head.Children.Add(new TextBlock { Text = job.Title, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis });
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+            if (!job.IsFinished)
+            {
+                var pause = new Button { Content = job.State == Core.Operations.TransferState.Paused ? "Resume" : "Pause", FontSize = 11, Padding = new Thickness(8, 2, 8, 2) };
+                pause.Click += (_, _) => { if (job.State == Core.Operations.TransferState.Paused) job.Resume(); else job.Pause(); RenderTransfersPanel(); };
+                var cancel = new Button { Content = "Cancel", FontSize = 11, Padding = new Thickness(8, 2, 8, 2) };
+                cancel.Click += (_, _) => job.Cancel();
+                buttons.Children.Add(pause);
+                buttons.Children.Add(cancel);
+            }
+
+            Grid.SetColumn(buttons, 1);
+            head.Children.Add(buttons);
+            box.Children.Add(head);
+            box.Children.Add(new ProgressBar { Maximum = 1, Value = job.State == Core.Operations.TransferState.Completed ? 1 : p.Fraction, ShowPaused = job.State == Core.Operations.TransferState.Paused, ShowError = job.State == Core.Operations.TransferState.Failed });
+            var status = job.State switch
+            {
+                Core.Operations.TransferState.Completed => $"done · {p.TotalFiles} files · {Format.Size(p.TotalBytes)}",
+                Core.Operations.TransferState.Failed => "failed: " + job.Error,
+                Core.Operations.TransferState.Cancelled => "cancelled",
+                Core.Operations.TransferState.Queued => "waiting",
+                _ => $"{p.DoneFiles}/{p.TotalFiles} files · {Format.Size(p.DoneBytes)} of {Format.Size(p.TotalBytes)} · {Format.Size((long)p.BytesPerSecond)}/s",
+            };
+            box.Children.Add(new TextBlock { Text = status, FontFamily = Mono, FontSize = 11, Foreground = Theme.Brush("PolluxMutedBrush"), TextTrimming = TextTrimming.CharacterEllipsis });
+            if (!job.IsFinished && p.CurrentFile.Length > 0)
+                box.Children.Add(new TextBlock { Text = p.CurrentFile, FontFamily = Mono, FontSize = 10.5, Foreground = Theme.Brush("PolluxMutedBrush"), TextTrimming = TextTrimming.CharacterEllipsis });
+            foreach (var err in job.Errors.Take(5))
+                box.Children.Add(new TextBlock { Text = "⚠ " + err, FontFamily = Mono, FontSize = 10.5, Foreground = Theme.Brush("PolluxBadBrush"), TextWrapping = TextWrapping.Wrap });
+            TransfersPanel.Children.Add(box);
+        }
+
+        var clear = new Button { Content = "Clear finished", FontSize = 11, HorizontalAlignment = HorizontalAlignment.Right };
+        clear.Click += (_, _) => { _app.Transfers.ClearFinished(); RenderTransfersPanel(); UpdateTransfersUi(); };
+        TransfersPanel.Children.Add(clear);
+    }
+
     // ---------------- native context menu ----------------
 
     /// <summary>The full Windows context menu for the selection (or the current folder), at the mouse position.</summary>
@@ -799,8 +1029,44 @@ internal sealed partial class MainWindow : Window, IPaneHost
         var item = Active.SelectedItems.FirstOrDefault();
         if (item is null) return;
         _preview ??= new PreviewController(PreviewHost, PreviewTitle, PreviewMeta);
+        _preview.MaxText = Services.Settings.Preview.MaxTextMegabytes * 1024L * 1024;
         PreviewOverlay.Visibility = Visibility.Visible;
         _preview.Show(item.Entry);
+    }
+
+    /// <summary>Debounced: arrowing through a list only renders the item you stop on.</summary>
+    private void SchedulePreviewPane()
+    {
+        if (!Services.Settings.Preview.PaneVisible) return;
+        if (_previewPaneTimer is null)
+        {
+            _previewPaneTimer = DispatcherQueue.CreateTimer();
+            _previewPaneTimer.Interval = TimeSpan.FromMilliseconds(120);
+            _previewPaneTimer.IsRepeating = false;
+            _previewPaneTimer.Tick += (_, _) => UpdatePreviewPane();
+        }
+
+        _previewPaneTimer.Stop();
+        _previewPaneTimer.Start();
+    }
+
+    private void UpdatePreviewPane()
+    {
+        var item = Active.SelectedItems.Count == 1 ? Active.SelectedItems[0] : null;
+        if (item is null)
+        {
+            _previewPanePath = null;
+            PreviewPaneContent.Children.Clear();
+            PreviewPaneTitle.Text = Active.SelectedItems.Count > 1 ? $"{Active.SelectedItems.Count} items" : "Preview";
+            PreviewPaneMeta.Text = Active.SelectedItems.Count > 1 ? Format.Size(Active.SelectedItems.Where(i => !i.IsDirectory).Sum(i => i.Entry.Size)) : "select a file";
+            return;
+        }
+
+        if (string.Equals(item.Path, _previewPanePath, StringComparison.OrdinalIgnoreCase)) return;
+        _previewPanePath = item.Path;
+        _previewPane ??= new PreviewController(PreviewPaneContent, PreviewPaneTitle, PreviewPaneMeta) { Compact = true };
+        _previewPane.MaxText = Services.Settings.Preview.MaxTextMegabytes * 1024L * 1024;
+        _previewPane.Show(item.Entry);
     }
 
     private void ClosePreview()
@@ -951,10 +1217,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
             return;
         }
 
-        var ok = move ? Shell.Move(Hwnd, paths, target) : Shell.Copy(Hwnd, paths, target);
-        Active.Refresh();
-        Other.Refresh();
-        if (ok) ShowToast($"{(move ? "Moved" : "Copied")} {paths.Count} item(s) to {WinPath.Name(target)}");
+        Transfer(move, paths, target);
     }
 
     private async Task SetClipboardAsync(bool move)
@@ -978,9 +1241,8 @@ internal sealed partial class MainWindow : Window, IPaneHost
         var paths = items.Select(i => i.Path).Where(x => !string.IsNullOrEmpty(x)).ToList();
         if (paths.Count == 0) return;
         var move = content.RequestedOperation.HasFlag(DataPackageOperation.Move);
-        var ok = move ? Shell.Move(Hwnd, paths, target) : Shell.Copy(Hwnd, paths, target);
-        if (ok && move) Clipboard.Clear();
-        Active.Refresh();
+        Transfer(move, paths, target);
+        if (move) Clipboard.Clear();
     }
 
     private async Task RenameAsync()

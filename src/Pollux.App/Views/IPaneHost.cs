@@ -11,4 +11,5 @@ internal interface IPaneHost
     void OnPaneActivated(PaneView pane);
     void OnPaneStateChanged(PaneView pane);
     void MoveTab(int fromPane, int fromIndex, int toPane, int toIndex);
+    void Transfer(bool move, IReadOnlyList<string> sources, string targetDirectory);
 }

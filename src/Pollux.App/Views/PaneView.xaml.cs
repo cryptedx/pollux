@@ -875,10 +875,7 @@ public sealed partial class PaneView : UserControl
         {
             var items = await e.DataView.GetStorageItemsAsync();
             var paths = items.Select(i => i.Path).Where(p => !string.IsNullOrEmpty(p)).ToList();
-            var move = e.AcceptedOperation == DataPackageOperation.Move;
-            if (move) Shell.Move(_host.Hwnd, paths, Folder);
-            else Shell.Copy(_host.Hwnd, paths, Folder);
-            Refresh();
+            _host.Transfer(e.AcceptedOperation == DataPackageOperation.Move, paths, Folder);
         }
         finally
         {

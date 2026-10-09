@@ -38,6 +38,14 @@ _Avoid_: Search (when only the current location is meant)
 Fuzzy lookup of files and folders across all Index Roots, opened from anywhere.
 _Avoid_: Global search, find
 
+**Transfer**:
+One copy or move job run by Pollux's own queue, with progress, pause, cancel and a conflict rule.
+_Avoid_: Operation, task, job (alone)
+
+**Preview Pane**:
+A permanent side area that shows the selected entry of the active Pane and follows the selection.
+_Avoid_: Quick Look (that one is temporary)
+
 **Quick Look**:
 A temporary full-size preview of the selected entry, opened and closed with Space.
 _Avoid_: Preview pane, viewer

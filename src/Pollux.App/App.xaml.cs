@@ -34,6 +34,9 @@ public partial class App : Application
     internal SearchService Search { get; private set; } = null!;
     internal List<string> RecentCommands { get; } = [];
     internal MainWindow? LastActive { get; set; }
+
+    /// <summary>All copies and moves of all windows, run one after another.</summary>
+    internal Core.Operations.Transfers Transfers { get; } = new();
     internal DispatcherQueue Dispatcher { get; private set; } = null!;
     internal static App Instance => (App)Current;
 

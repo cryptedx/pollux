@@ -45,9 +45,24 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition x:Name="SecondPaneColumn" Width="*" />
+                    <ColumnDefinition x:Name="PreviewPaneColumn" Width="0" />
                 </Grid.ColumnDefinitions>
                 <views:PaneView x:Name="Pane1" />
                 <views:PaneView x:Name="Pane2" Grid.Column="1" />
+                <Border x:Name="PreviewPane" Grid.Column="2" Visibility="Collapsed" CornerRadius="8,8,0,0" BorderThickness="1"
+                        BorderBrush="{ThemeResource PolluxLineBrush}" Background="{ThemeResource PolluxSurfaceBrush}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Padding="12,8" BorderBrush="{ThemeResource PolluxLineBrush}" BorderThickness="0,0,0,1">
+                            <TextBlock x:Name="PreviewPaneTitle" Text="Preview" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock x:Name="PreviewPaneMeta" Text="select a file" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxMutedBrush}" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <Grid x:Name="PreviewPaneContent" Grid.Row="1" />
+                    </Grid>
+                </Border>
             </Grid>
             <Border x:Name="TerminalHost" Grid.Row="1" Visibility="Collapsed" Margin="0,6,6,0" CornerRadius="8,8,0,0" BorderThickness="1"
                     BorderBrush="{ThemeResource PolluxLineBrush}" Background="{ThemeResource PolluxSurface2Brush}" />
@@ -85,6 +100,17 @@
             </Grid.ColumnDefinitions>
             <StackPanel x:Name="StatsPanel" Orientation="Horizontal" Spacing="16" VerticalAlignment="Center" />
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Border x:Name="TransfersBadge" Visibility="Collapsed" Tapped="TransfersBadge_Tapped" Background="{ThemeResource PolluxSurfaceBrush}" BorderBrush="{ThemeResource PolluxLineBrush}" BorderThickness="1" CornerRadius="4" Padding="6,0">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <ProgressBar x:Name="TransfersBar" Width="70" Maximum="1" VerticalAlignment="Center" />
+                        <TextBlock x:Name="TransfersText" FontFamily="{StaticResource PolluxMono}" FontSize="11" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <FlyoutBase.AttachedFlyout>
+                        <Flyout x:Name="TransfersFlyout" Placement="Top">
+                            <StackPanel x:Name="TransfersPanel" Spacing="6" Width="460" />
+                        </Flyout>
+                    </FlyoutBase.AttachedFlyout>
+                </Border>
                 <Border x:Name="UpdatesBadge" Visibility="Collapsed" Tapped="UpdatesBadge_Tapped" Background="{ThemeResource PolluxAccentSoftBrush}" CornerRadius="4" Padding="6,0">
                     <TextBlock x:Name="UpdatesBadgeText" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxAccentBrush}" />
                 </Border>

@@ -218,6 +218,8 @@ internal sealed partial class SettingsWindow : Window
             new("Files", "files.showHidden", "Show hidden files", "Ctrl+H toggles.", Bool(() => S.Files.ShowHidden, v => S.Files.ShowHidden = v)),
             new("Files", "files.showSystem", "Show protected system files", "", Bool(() => S.Files.ShowSystem, v => S.Files.ShowSystem = v)),
             new("Files", "files.showExtensions", "Show file extensions", "", Bool(() => S.Files.ShowExtensions, v => S.Files.ShowExtensions = v)),
+            new("Files", "files.operationEngine", "Copy / move engine", "pollux: queue with progress in the status bar, pause and cancel. windows: the classic Windows copy dialogs.", Options(["pollux", "windows"], () => S.Files.OperationEngine, v => S.Files.OperationEngine = v)),
+            new("Files", "files.conflictPolicy", "When a file already exists", "Ask, or decide automatically.", Choice(() => S.Files.ConflictPolicy, v => S.Files.ConflictPolicy = v)),
             new("Files", "files.gitStatus", "Git status in file lists", "Letters M/A/U/R/D next to changed files; ignored files dimmed. Runs git locally.", Bool(() => S.Files.GitStatus, v => S.Files.GitStatus = v)),
             new("Files", "files.foldersFirst", "Folders first", "", Bool(() => S.Files.FoldersFirst, v => S.Files.FoldersFirst = v)),
             new("Files", "files.sortBy", "Sort by", "", Choice(() => S.Files.SortBy, v => S.Files.SortBy = v)),
@@ -284,6 +286,9 @@ internal sealed partial class SettingsWindow : Window
         new("Updates", "updates.checkAutomatically", "Check for app updates with winget", "Opt-in. winget contacts the internet; Pollux itself never does.", Bool(() => S.Updates.CheckAutomatically, v => S.Updates.CheckAutomatically = v)),
         new("Updates", "updates.checkIntervalHours", "Check interval (hours)", "", Number(() => S.Updates.CheckIntervalHours, v => S.Updates.CheckIntervalHours = (int)v, 1, 168)),
         new("Updates", "updates.ignoredPackages", "Ignored packages", "winget package ids, one per line.", TextList(() => S.Updates.IgnoredPackages, v => S.Updates.IgnoredPackages = v, "Microsoft.Teams")),
+        new("Preview", "preview.paneVisible", "Show preview pane", "Alt+P toggles. Follows the selection in the active pane.", Bool(() => S.Preview.PaneVisible, v => S.Preview.PaneVisible = v)),
+        new("Preview", "preview.paneWidth", "Preview pane width", "", Number(() => S.Preview.PaneWidth, v => S.Preview.PaneWidth = v, 220, 1200, 20)),
+        new("Preview", "preview.maxTextMegabytes", "Largest file shown as text (MB)", "Bigger files are shown as hex.", Number(() => S.Preview.MaxTextMegabytes, v => S.Preview.MaxTextMegabytes = (int)v, 1, 64)),
         new("Inbox", "inbox.hideDesktopIcons", "Hide desktop icons", "Keeps the desktop clean; use Pollux's Inbox to see its files.", Bool(() => S.Inbox.HideDesktopIcons, v => S.Inbox.HideDesktopIcons = v)),
         new("Inbox", "inbox.sortTarget", "Sort Inbox into", "Folder that \"Sort Inbox\" moves files into (by type). Empty = Documents\\Inbox.", Text(() => S.Inbox.SortTarget, v => S.Inbox.SortTarget = v, @"Documents\Inbox")),
     ];

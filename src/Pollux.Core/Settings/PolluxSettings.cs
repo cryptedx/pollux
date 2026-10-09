@@ -24,6 +24,16 @@ public sealed class PolluxSettings
     public DownloadsSettings Downloads { get; set; } = new();
     public UpdatesSettings Updates { get; set; } = new();
     public InboxSettings Inbox { get; set; } = new();
+    public PreviewSettings Preview { get; set; } = new();
+}
+
+public sealed class PreviewSettings
+{
+    /// <summary>Show the preview pane next to the Panes (Alt+P).</summary>
+    public bool PaneVisible { get; set; }
+    public double PaneWidth { get; set; } = 380;
+    /// <summary>Files larger than this are shown as hex instead of text.</summary>
+    public int MaxTextMegabytes { get; set; } = 4;
 }
 
 public sealed class AppearanceSettings
@@ -63,6 +73,10 @@ public sealed class FilesSettings
     public bool SingleClickOpen { get; set; }
     /// <summary>Show git status letters (M/A/U/…) and dim ignored files in repositories. Runs git.exe locally.</summary>
     public bool GitStatus { get; set; } = true;
+    /// <summary>"pollux": own transfer queue with progress in the status bar. "windows": the shell's copy dialogs.</summary>
+    public string OperationEngine { get; set; } = "pollux";
+    /// <summary>When a file already exists at the target (Pollux engine only).</summary>
+    public Operations.ConflictPolicy ConflictPolicy { get; set; } = Operations.ConflictPolicy.Ask;
     /// <summary>Seconds before a slow (e.g. network) folder shows a timeout hint.</summary>
     public int SlowFolderSeconds { get; set; } = 5;
 }

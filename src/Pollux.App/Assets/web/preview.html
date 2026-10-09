@@ -29,7 +29,7 @@
     const old = editor.getModel();
     editor.setModel(monaco.editor.createModel(m.text || '', lang ? lang.id : 'plaintext'));
     if (old) old.dispose();
-    editor.updateOptions({ wordWrap: m.wrap ? 'on' : 'off' });
+    editor.updateOptions({ wordWrap: m.wrap ? 'on' : 'off', minimap: { enabled: m.minimap !== false }, lineNumbers: m.minimap === false ? 'off' : 'on' });
   }
   host.addEventListener('message', e => {
     const m = JSON.parse(e.data);

@@ -15,7 +15,6 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
 {
     private static readonly HashSet<string> Images = new(StringComparer.OrdinalIgnoreCase) { "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "tif", "tiff" };
     private static readonly HashSet<string> Browser = new(StringComparer.OrdinalIgnoreCase) { "pdf", "svg", "mp4", "webm", "mp3", "wav", "html", "htm" };
-    private const long MaxText = 4 * 1024 * 1024;
 
     private WebView2? _codeView;
     private Task<CoreWebView2>? _codeInit;
@@ -27,6 +26,12 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
 
     public string? CurrentPath { get; private set; }
 
+    /// <summary>Narrow side-pane mode: no minimap, wrapped text.</summary>
+    public bool Compact { get; init; }
+
+    /// <summary>Text files up to this size are shown as text; larger ones as hex.</summary>
+    public long MaxText { get; set; } = 4 * 1024 * 1024;
+
     public void Show(FileEntry entry)
     {
         CurrentPath = entry.FullPath;
@@ -36,7 +41,7 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
 
         if (entry.IsDirectory)
         {
-            host.Children.Add(FolderSummary(entry.FullPath));
+            _ = ShowFolderAsync(entry.FullPath);
         }
         else if (Images.Contains(entry.Extension))
         {
@@ -46,14 +51,32 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
         {
             _ = ShowInBrowserAsync(entry.FullPath);
         }
-        else if (entry.Size <= MaxText && LooksLikeText(entry.FullPath))
-        {
-            _ = ShowCodeAsync(entry);
-        }
         else
         {
-            host.Children.Add(HexView(entry.FullPath));
+            _ = ShowFileAsync(entry);
         }
+    }
+
+    /// <summary>Sniffing and hex reading happen off the UI thread, so slow or network files never block arrowing.</summary>
+    private async Task ShowFileAsync(FileEntry entry)
+    {
+        var path = entry.FullPath;
+        var isText = entry.Size <= MaxText && await Task.Run(() => LooksLikeText(path));
+        if (CurrentPath != path) return;
+        if (isText)
+        {
+            await ShowCodeAsync(entry);
+            return;
+        }
+
+        var hex = await Task.Run(() => HexText(path));
+        if (CurrentPath == path) host.Children.Add(HexView(hex));
+    }
+
+    private async Task ShowFolderAsync(string path)
+    {
+        var text = await Task.Run(() => FolderSummaryText(path));
+        if (CurrentPath == path) host.Children.Add(Message(text));
     }
 
     private async Task ShowCodeAsync(FileEntry entry)
@@ -75,7 +98,7 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
             host.Children.Add(_codeView);
         }
 
-        var message = WebHost.Json(("type", "show"), ("text", text), ("ext", entry.Extension), ("dark", Theme.Current == ElementTheme.Dark), ("wrap", entry.Extension is "md" or "txt" or "log"));
+        var message = WebHost.Json(("type", "show"), ("text", text), ("ext", entry.Extension), ("dark", Theme.Current == ElementTheme.Dark), ("wrap", Compact || entry.Extension is "md" or "txt" or "log"), ("minimap", !Compact));
         _pendingCode = message;
         _codeCore = await _codeInit!;
         if (_codeReady && CurrentPath == entry.FullPath) _codeCore.PostWebMessageAsString(message);
@@ -128,7 +151,14 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
         catch (UnauthorizedAccessException) { return false; }
     }
 
-    private static FrameworkElement HexView(string path)
+    private static FrameworkElement HexView(string text) => new ScrollViewer
+    {
+        Padding = new Thickness(16),
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+        Content = new TextBlock { Text = text, FontFamily = Ui.Mono, FontSize = 12, IsTextSelectionEnabled = true },
+    };
+
+    private static string HexText(string path)
     {
         var sb = new StringBuilder();
         try
@@ -164,15 +194,10 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
             sb.Append(ex.Message);
         }
 
-        return new ScrollViewer
-        {
-            Padding = new Thickness(16),
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = new TextBlock { Text = sb.ToString(), FontFamily = Ui.Mono, FontSize = 12, IsTextSelectionEnabled = true },
-        };
+        return sb.ToString();
     }
 
-    private static FrameworkElement FolderSummary(string path)
+    private static string FolderSummaryText(string path)
     {
         int files = 0, dirs = 0;
         long size = 0;
@@ -186,10 +211,10 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return Message(ex.Message);
+            return ex.Message;
         }
 
-        return Message($"{dirs} folders · {files} files · {Format.Size(size)} (top level)\n⎇ {GitInfo.BranchFor(path) ?? "no git repository"}");
+        return $"{dirs} folders · {files} files · {Format.Size(size)} (top level)\n⎇ {GitInfo.BranchFor(path) ?? "no git repository"}";
     }
 
     private static TextBlock Message(string text) => new()

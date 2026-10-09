@@ -46,6 +46,8 @@ public static class SettingsStore
         s.Updates ??= new();
         s.Updates.IgnoredPackages ??= [];
         s.Inbox ??= new();
+        s.Preview ??= new();
+        s.Files.OperationEngine ??= "pollux";
         s.Appearance.UiFont ??= "Segoe UI Variable Text";
         s.Appearance.MonoFont ??= "Cascadia Mono";
         s.Files.DateFormat ??= "yyyy-MM-dd HH:mm";
