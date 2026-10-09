@@ -43,6 +43,14 @@ internal sealed partial class UpdatesWindow : Window
         AppWindow.Resize(new Windows.Graphics.SizeInt32((int)(860 * scale), (int)(680 * scale)));
         Build();
         Content = _root;
+        app.Services.SettingsChanged += OnThemeChanged;
+        Closed += (_, _) => app.Services.SettingsChanged -= OnThemeChanged;
+    }
+
+    private void OnThemeChanged()
+    {
+        _root.RequestedTheme = Theme.Current;
+        Render(LastResult);
     }
 
     public void ShowWindow()

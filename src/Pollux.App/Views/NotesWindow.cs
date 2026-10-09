@@ -60,9 +60,18 @@ internal sealed partial class NotesWindow : Window
             AppWindow.Hide();
         };
         _ = InitWebAsync();
+        _app.Services.SettingsChanged += OnThemeChanged;
+        Closed += (_, _) => _app.Services.SettingsChanged -= OnThemeChanged;
         Directory.CreateDirectory(Folder);
         Watch();
         Reload();
+    }
+
+    private void OnThemeChanged()
+    {
+        _root.RequestedTheme = Theme.Current;
+        Render();
+        PushOptions();
     }
 
     /// <summary>Flushes unsaved typing (used before the app quits).</summary>

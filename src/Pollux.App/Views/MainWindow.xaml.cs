@@ -36,6 +36,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
     private Core.Workspaces.Workspace? _workspace;
     private PreviewController? _preview;
     private PreviewController? _previewPane;
+    private readonly OverlappedPresenter _presenter = OverlappedPresenter.Create();
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _previewPaneTimer;
     private string? _previewPanePath;
     private TerminalController? _terminal;
@@ -61,6 +62,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         if (IsElevated) Title = "Pollux (Admin)";
         UpdatesWindow.ResultChanged += OnUpdatesChanged;
         _app.Transfers.Changed += OnTransferChanged;
+        AppWindow.SetPresenter(_presenter); // own instance: casting AppWindow.Presenter fails under Native AOT
         ApplyWindowBounds(session);
         _dual = session.DualPane;
         _sidebar = session.SidebarVisible;
@@ -110,7 +112,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         var h = (int)(Math.Max(400, s.Height) * scale);
         if (s.X >= 0 && s.Y >= 0 && IsOnScreen(s.X, s.Y)) AppWindow.MoveAndResize(new RectInt32(s.X, s.Y, w, h));
         else AppWindow.Resize(new SizeInt32(w, h));
-        if (s.Maximized && AppWindow.Presenter is OverlappedPresenter p) p.Maximize();
+        if (s.Maximized) _presenter.Maximize();
     }
 
     /// <summary>True if the saved top-left corner (plus some margin) is on a connected monitor. Win32 instead of
@@ -121,7 +123,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
     public WindowSession ToSession()
     {
         var scale = Interop.Native.GetDpiForWindow(Hwnd) / 96.0;
-        var maximized = AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Maximized };
+        var maximized = _presenter.State == OverlappedPresenterState.Maximized;
         return new WindowSession
         {
             Panes = [Pane1.ToSession(), Pane2.ToSession()],

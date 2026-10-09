@@ -37,18 +37,20 @@ internal sealed partial class DownloadsStack : Window
         _grid = _gridView;
         Title = "Pollux Downloads";
         SystemBackdrop = new DesktopAcrylicBackdrop();
-        if (AppWindow.Presenter is OverlappedPresenter p)
-        {
-            p.IsAlwaysOnTop = true;
-            p.IsResizable = false;
-            p.IsMaximizable = false;
-            p.IsMinimizable = false;
-            p.SetBorderAndTitleBar(true, false);
-        }
+        // Own presenter instead of "AppWindow.Presenter is OverlappedPresenter": that type test fails under Native AOT,
+        // which silently left the stack with a title bar and not always on top.
+        var p = OverlappedPresenter.Create();
+        p.IsAlwaysOnTop = true;
+        p.IsResizable = false;
+        p.IsMaximizable = false;
+        p.IsMinimizable = false;
+        p.SetBorderAndTitleBar(true, false);
+        AppWindow.SetPresenter(p);
 
         AppWindow.IsShownInSwitchers = false;
         Build();
         Content = _root;
+        app.Services.SettingsChanged += () => { _root.RequestedTheme = Theme.Current; _dirty = true; };
         Activated += (_, e) =>
         {
             if (e.WindowActivationState != WindowActivationState.Deactivated || !AppWindow.IsVisible) return;
