@@ -13,7 +13,7 @@ It is made for developers who work in VS Code and with agentic coding tools.
 
 | | |
 |---|---|
-| **Dual pane + tabs** | Two Panes, each with its own Tabs. `Ctrl+<` toggles dual pane, `Ctrl+1/2` or `Tab` switches pane, `F5`/`F6` copies or moves to the other pane |
+| **Dual pane + tabs** | Two Panes, each with its own Tabs. `Ctrl+<` toggles dual pane, `Ctrl+1/2` or `Tab` switches pane, `F5`/`F6` copies or moves to the other pane. Drag tabs to reorder them, into the other pane or into another Pollux window; `Ctrl+Shift+Alt+N` moves the current tab to a new window |
 | **Bookmarks** | Grouped and reorderable. `Ctrl+D` adds the current folder, `Ctrl+Shift+1…9` jumps to a bookmark |
 | **Quick Search** | `Ctrl+P` does a fuzzy search over an in-memory index of your Index Roots (bookmarks, repos, Downloads, Desktop, Documents and Notes). `node_modules`, `.git`, `bin` and `obj` are skipped |
 | **Filter** | `Ctrl+F` filters the current folder live by substring or word initials (`dbp` → `Directory.Build.props`) |

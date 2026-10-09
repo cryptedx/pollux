@@ -246,7 +246,7 @@ public sealed partial class PaneView : UserControl
             };
             tab.DragOver += (_, e) =>
             {
-                if (_draggedTab is not { } d || d.Source._host != _host) return;
+                if (_draggedTab is null) return;
                 e.AcceptedOperation = DataPackageOperation.Move;
                 e.DragUIOverride.IsCaptionVisible = false;
                 e.DragUIOverride.IsGlyphVisible = false;
@@ -254,10 +254,7 @@ public sealed partial class PaneView : UserControl
             tab.Drop += (_, e) =>
             {
                 e.Handled = true; // the tab bar behind must not also handle it
-                if (_draggedTab is not { } from) return;
-                _draggedTab = null;
-                if (from.Source._host != _host) return; // tabs move only within one window
-                _host.MoveTab(from.Source.Index, from.Tab, Index, index);
+                AcceptDraggedTab(index);
             };
             tab.DropCompleted += (_, _) => _draggedTab = null;
             // Activate on Tapped (not PointerPressed): rebuilding the strip on press would remove the tab being dragged.
@@ -277,17 +274,34 @@ public sealed partial class PaneView : UserControl
     /// <summary>Dropping a tab on the free part of the tab bar moves it to the end of this Pane.</summary>
     private void TabBar_DragOver(object sender, DragEventArgs e)
     {
-        if (_draggedTab is not { } d || d.Source._host != _host) return;
+        if (_draggedTab is null) return;
         e.AcceptedOperation = DataPackageOperation.Move;
         e.DragUIOverride.IsCaptionVisible = false;
         e.DragUIOverride.IsGlyphVisible = false;
     }
 
-    private void TabBar_Drop(object sender, DragEventArgs e)
+    private void TabBar_Drop(object sender, DragEventArgs e) => AcceptDraggedTab(-1);
+
+    /// <summary>
+    /// Takes the tab being dragged: from this window (reorder / other pane) or from another Pollux window,
+    /// which hands the tab over. <paramref name="targetIndex"/> -1 appends.
+    /// </summary>
+    private void AcceptDraggedTab(int targetIndex)
     {
-        if (_draggedTab is not { } from || from.Source._host != _host) return;
+        if (_draggedTab is not { } from) return;
         _draggedTab = null;
-        _host.MoveTab(from.Source.Index, from.Tab, Index, from.Source == this ? _tabs.Count - 1 : _tabs.Count);
+        if (from.Source._host == _host)
+        {
+            var end = from.Source == this ? _tabs.Count - 1 : _tabs.Count;
+            _host.MoveTab(from.Source.Index, from.Tab, Index, targetIndex < 0 ? end : targetIndex);
+            return;
+        }
+
+        if (from.Tab < 0 || from.Tab >= from.Source.Tabs.Count) return;
+        var location = from.Source.DetachTab(from.Tab);
+        InsertTab(targetIndex < 0 ? _tabs.Count : targetIndex, location);
+        _host.OnPaneActivated(this);
+        _host.Activate();
     }
 
     private void NewTab_Click(object sender, RoutedEventArgs e)

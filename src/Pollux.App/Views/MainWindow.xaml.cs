@@ -629,6 +629,13 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "tab.next": p.NextTab(1); break;
             case "tab.prev": p.NextTab(-1); break;
             case "tab.duplicate": p.NewTab(p.Tab.Location); break;
+            case "tab.moveToNewWindow":
+                {
+                    var location = p.Tab.Location;
+                    p.DetachTab(p.ActiveTabIndex);
+                    _app.OpenNewWindow(location == WinPath.Home ? null : location);
+                    break;
+                }
             case "nav.back": p.Back(); break;
             case "nav.forward": p.Forward(); break;
             case "nav.up" or "nav.upBackspace": p.Up(); break;

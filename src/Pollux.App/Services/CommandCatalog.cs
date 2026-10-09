@@ -34,6 +34,7 @@ internal static class CommandCatalog
         new("tab.next", "Tab: Next Tab", "ctrl+tab"),
         new("tab.prev", "Tab: Previous Tab", "ctrl+shift+tab"),
         new("tab.duplicate", "Tab: Duplicate Tab", "ctrl+shift+d"),
+        new("tab.moveToNewWindow", "Tab: Move to New Window", "ctrl+shift+alt+n"),
         new("nav.back", "Go: Back", "alt+left"),
         new("nav.forward", "Go: Forward", "alt+right"),
         new("nav.up", "Go: Up to Parent Folder", "alt+up"),

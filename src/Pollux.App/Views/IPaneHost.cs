@@ -12,4 +12,7 @@ internal interface IPaneHost
     void OnPaneStateChanged(PaneView pane);
     void MoveTab(int fromPane, int fromIndex, int toPane, int toIndex);
     void Transfer(bool move, IReadOnlyList<string> sources, string targetDirectory);
+
+    /// <summary>Brings the window to the front (Window.Activate).</summary>
+    void Activate();
 }

@@ -210,9 +210,11 @@ public partial class App : Application
     private MainWindow OpenWindow(bool restore, string? navigateTo = null)
     {
         WindowSession session;
+        var restored = false;
         if (restore && Services.Settings.App.RestoreWindows && Services.Session.Windows.Count > _windows.Count)
         {
             session = Services.Session.Windows[_windows.Count];
+            restored = true;
         }
         else
         {
@@ -228,7 +230,10 @@ public partial class App : Application
         if (navigateTo is not null)
         {
             var dir = Directory.Exists(navigateTo) ? navigateTo : Path.GetDirectoryName(navigateTo)!;
-            session.Panes[session.ActivePane].Tabs.Insert(0, new TabSession { Location = dir });
+            var tabs = session.Panes[session.ActivePane].Tabs;
+            // A fresh window opened for a folder shows just that folder; a restored one keeps its tabs.
+            if (!restored) tabs.Clear();
+            tabs.Insert(0, new TabSession { Location = dir });
             session.Panes[session.ActivePane].ActiveTab = 0;
         }
 
