@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml.Controls;
 using Pollux.App.ViewModels;
+using Pollux.Core.Copilot;
 
 namespace Pollux.App.Views;
 
@@ -40,6 +41,20 @@ internal static class ContextMenus
             if (selection.Count == 1) Add("Rename", "file.rename");
             Add("Delete", "file.delete");
             Add("Add bookmark", "bookmark.addSelection");
+            if (CopilotAvailability.IsAvailable(host.Services.Settings.Copilot, MainWindow.IsElevated))
+            {
+                var sub = new MenuFlyoutSubItem { Text = "Copilot" };
+                foreach (var a in SelectionActions.For(host.Services.Settings.Copilot))
+                {
+                    var item = new MenuFlyoutItem { Text = a.Title };
+                    var id = a.CommandId;
+                    item.Click += (_, _) => host.Execute(id);
+                    sub.Items.Add(item);
+                }
+
+                menu.Items.Add(sub);
+            }
+
             Sep();
             Add("Properties", "file.properties");
             Add("More options (Windows menu)", "file.shellMenu");

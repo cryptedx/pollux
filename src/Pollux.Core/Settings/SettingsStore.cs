@@ -47,6 +47,13 @@ public static class SettingsStore
         s.Updates.IgnoredPackages ??= [];
         s.Inbox ??= new();
         s.Preview ??= new();
+        s.Copilot ??= new();
+        s.Copilot.PromptTemplates ??= [];
+        s.Copilot.GuardRules ??= new();
+        s.Copilot.GuardRules.BlockedCommands ??= [];
+        s.Copilot.GuardRules.AskCommands ??= [];
+        s.Copilot.GuardRules.ProtectedPaths ??= [];
+        s.Copilot.GuardRules.UntrustedPaths ??= [];
         s.Clipboard ??= new();
         s.Clipboard.ExcludeProcesses ??= [];
         s.Files.OperationEngine ??= "pollux";

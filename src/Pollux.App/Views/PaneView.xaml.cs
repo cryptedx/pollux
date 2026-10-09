@@ -402,7 +402,24 @@ public sealed partial class PaneView : UserControl
         Tab.SelectedNames = SelectedItems.Select(i => i.Entry.Name).ToList();
     }
 
-    private async Task ShowCurrentAsync(bool keepSelection = false)
+    private Task _loading = Task.CompletedTask;
+
+    /// <summary>Completes when the folder of the current Tab is listed (or its load was superseded or failed).</summary>
+    internal Task ListingLoaded => _loading;
+
+    /// <summary>Selects exactly the visible entries with these names (Copilot's Pollux tools); returns how many were selected.</summary>
+    internal int SelectNames(IReadOnlyList<string> names)
+    {
+        if (Tab.IsHome) return 0;
+        Tab.SelectedNames = [.. names];
+        Tab.FocusName = null;
+        Present(Tab);
+        return SelectedItems.Count;
+    }
+
+    private Task ShowCurrentAsync(bool keepSelection = false) => _loading = ShowCurrentCoreAsync(keepSelection);
+
+    private async Task ShowCurrentCoreAsync(bool keepSelection)
     {
         _loadCts?.Cancel();
         var cts = _loadCts = new CancellationTokenSource();

@@ -5,8 +5,13 @@ using Microsoft.Windows.AppLifecycle;
 using Pollux.App.Interop;
 using Pollux.App.Services;
 using Pollux.App.Views;
+using Pollux.Copilot;
+using Pollux.Copilot.Chat;
+using Pollux.Copilot.Connection;
+using Pollux.Copilot.Models;
 using Pollux.Core.Clipboard;
 using Pollux.Core.Commands;
+using Pollux.Core.Copilot;
 using Pollux.Core.Session;
 
 namespace Pollux.App;
@@ -36,6 +41,46 @@ public partial class App : Application
     }
 
     internal AppServices Services { get; private set; } = null!;
+
+    /// <summary>The one Copilot CLI of this process, shared by all windows; nothing runs until first Copilot use.</summary>
+    internal CopilotHost Copilot { get; private set; } = null!;
+
+    /// <summary>The Chat list, global for all windows and Workspaces (%LocalAppData%\Pollux\copilot\chats.json); the file is read on first use.</summary>
+    internal ChatStore CopilotChats => _copilotChats ??= new ChatStore(Path.Combine(Services.Paths.DataDirectory, "copilot"));
+
+    private ChatStore? _copilotChats;
+
+    /// <summary>The Action Logs of the Chats, kept next to <c>chats.json</c>.</summary>
+    internal ActionLogStore CopilotActionLogs => _copilotActionLogs ??= new ActionLogStore(Path.Combine(Services.Paths.DataDirectory, "copilot"));
+
+    private ActionLogStore? _copilotActionLogs;
+
+    /// <summary>Works out the Copilot Panel's connection and sign-in state.</summary>
+    internal CopilotConnectionMonitor CopilotMonitor { get; private set; } = null!;
+
+    /// <summary>The latest known premium-request quota, shared by all Panels and the status bar; only the Panels refresh it.</summary>
+    internal CopilotQuotaTracker CopilotQuotaState { get; private set; } = null!;
+
+    /// <summary>Asks the running CLI for the quota; never starts the CLI.</summary>
+    private async Task<CopilotQuota?> FetchCopilotQuotaAsync(CancellationToken cancellationToken) =>
+        Copilot.State.Status == CopilotHostStatus.Running
+        && await Copilot.ConnectAsync(cancellationToken).ConfigureAwait(false) is ICopilotCatalog catalog
+            ? await catalog.GetQuotaAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+
+    /// <summary>A new CLI connection; proxy and CA certificates from the settings go to the CLI process only.</summary>
+    private CopilotCliConnection CreateCopilotConnection()
+    {
+        var c = Services.Settings.Copilot;
+        var cli = CopilotCliLocator.Locate(c.CliPath);
+        return new CopilotCliConnection(cli, environment: CopilotCliEnvironment.Build(c.Proxy, c.CaCertificates, CopilotCliEnvironment.Current()));
+    }
+
+    /// <summary>The CLI whose login the Panel's "Sign in" runs in a terminal.</summary>
+    internal CopilotCli CurrentCopilotCli => CopilotCliLocator.Locate(Services.Settings.Copilot.CliPath);
+
+    /// <summary>"Enable Copilot" is on and this is not the Admin Instance; gates every Copilot entry point.</summary>
+    internal bool CopilotAvailable => CopilotAvailability.IsAvailable(Services.Settings.Copilot, MainWindow.IsElevated);
     internal SearchService Search { get; private set; } = null!;
     internal ClipboardService ClipboardService { get; private set; } = null!;
     internal List<string> RecentCommands { get; } = [];
@@ -64,6 +109,10 @@ public partial class App : Application
         StartupLog.Mark("onLaunched");
         Dispatcher = DispatcherQueue.GetForCurrentThread();
         Services = new AppServices(Dispatcher);
+        // Cheap: no SDK client and no CLI process until ConnectAsync (first Copilot use).
+        Copilot = new CopilotHost(CreateCopilotConnection, CopilotAvailable);
+        CopilotMonitor = new CopilotConnectionMonitor(Copilot);
+        CopilotQuotaState = new CopilotQuotaTracker(FetchCopilotQuotaAsync);
         ClipboardService = new ClipboardService(Services, Dispatcher);
         ClipboardService.Changed += ExtraFeatures.RefreshClipboardStack;
         Drives.Start(Dispatcher);
@@ -123,6 +172,8 @@ public partial class App : Application
     private void ApplyAppSettings()
     {
         var s = Services.Settings;
+        _ = Copilot.SetAvailableAsync(CopilotAvailable); // off: stops the CLI; on: waits for first use
+        if (!CopilotAvailable) CopilotQuotaState.Clear();
         if (MainWindow.IsElevated)
         {
             // Admin Instance: no tray, no autostart, no hotkeys, no hooks, no clipboard capture.
@@ -335,6 +386,7 @@ public partial class App : Application
                 // Not resident: the last window ends the process. Undo hooks and the Win+V takeover like Quit does.
                 _quitting = true;
                 StopServices();
+                StopCopilot();
                 Exit();
             }
         };
@@ -387,7 +439,21 @@ public partial class App : Application
         foreach (var w in _windows.ToList()) w.Close();
         _settingsWindow?.Close();
         ExtraFeatures.Shutdown();
+        StopCopilot();
         Exit();
+    }
+
+    /// <summary>Pollux exits: stop the CLI child. Bounded, so a hung CLI cannot keep Pollux alive.</summary>
+    private void StopCopilot()
+    {
+        try
+        {
+            Task.Run(() => Copilot.DisposeAsync().AsTask()).Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (AggregateException ex)
+        {
+            CrashLog.Write(ex);
+        }
     }
 
     /// <summary>Hooks, Win+V takeover, clipboard capture and tray: everything that must not outlive the process.</summary>

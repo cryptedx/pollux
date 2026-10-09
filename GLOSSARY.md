@@ -95,3 +95,37 @@ _Avoid_: Clipboard flyout, Win+V menu
 **Admin Instance**:
 A separately started, visibly marked Pollux window running with elevated rights, alongside the normal non-elevated Pollux.
 _Avoid_: Admin mode, elevated mode, root mode
+
+## Copilot
+
+**Copilot**:
+The GitHub Copilot agent inside Pollux, switched on by the user; it can read and act on files and Pollux itself.
+_Avoid_: Assistant, AI, bot
+
+**Chat**:
+One ongoing exchange with Copilot, kept and resumable later. Global, not part of any Workspace.
+_Avoid_: Session, conversation, thread
+
+**Copilot Panel**:
+The area docked at the side of a window where Chats are held.
+_Avoid_: Copilot Pane, chat window, sidebar
+
+**Agent Mode**:
+How far Copilot goes on its own in a Chat: Interactive (works step by step with the user), Plan (only plans, does not act) or Autopilot (keeps working until the task is done).
+_Avoid_: Mode (unqualified)
+
+**Permission Mode**:
+Which of Copilot's actions need the user's approval in a Chat: Manual (asks for each), Assisted (a second model approves what it judges safe) or Allow All (asks for nothing). Guard Rules apply in every Permission Mode.
+_Avoid_: Auto mode, yolo
+
+**Working Folder**:
+The folder a Chat acts in: changes inside it follow the Chat's Permission Mode, changes outside it always need approval.
+_Avoid_: Workspace (that is a saved working state), cwd, root
+
+**Guard Rules**:
+Pollux's own limits on Copilot that hold in every Permission Mode: blocked commands, commands that always ask, protected secrets, writes outside the Working Folder.
+_Avoid_: Policy (that is the organisation's), denylist, filter
+
+**Tainted Chat**:
+A Chat that has read content from an untrusted place (Downloads, Inbox, web, archives); it asks before shell, network and write actions until the user clears it.
+_Avoid_: Unsafe chat, quarantine

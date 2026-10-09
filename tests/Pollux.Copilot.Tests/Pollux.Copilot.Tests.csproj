@@ -1,0 +1,10 @@
+<Project Sdk="MSTest.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- As under Native AOT: any reflection-based JSON (e.g. in tool schemas or results) fails the tests. -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Pollux.Copilot\Pollux.Copilot.csproj" />
+  </ItemGroup>
+</Project>

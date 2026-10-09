@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Pollux.App.Services;
 using Pollux.Core.Commands;
+using Pollux.Core.Copilot;
 using Pollux.Core.Settings;
 
 namespace Pollux.App.Views;
@@ -62,7 +63,7 @@ internal sealed partial class SettingsWindow : Window
         Closed += (_, _) => app.Services.SettingsChanged -= OnExternalChange;
 
         Build();
-        _nav.ItemsSource = _all.Select(s => s.Section).Distinct().Append("Keyboard").ToList();
+        _nav.ItemsSource = ShownSettings().Select(s => s.Section).Distinct().Append("Keyboard").ToList();
         _nav.SelectedIndex = 0;
     }
 
@@ -97,8 +98,8 @@ internal sealed partial class SettingsWindow : Window
         }
 
         var items = q.Length > 0
-            ? _all.Where(s => s.Label.Contains(q, StringComparison.OrdinalIgnoreCase) || s.Key.Contains(q, StringComparison.OrdinalIgnoreCase) || s.Help.Contains(q, StringComparison.OrdinalIgnoreCase))
-            : _all.Where(s => s.Section == section);
+            ? ShownSettings().Where(s => s.Label.Contains(q, StringComparison.OrdinalIgnoreCase) || s.Key.Contains(q, StringComparison.OrdinalIgnoreCase) || s.Help.Contains(q, StringComparison.OrdinalIgnoreCase))
+            : ShownSettings().Where(s => s.Section == section);
 
         _content.Children.Add(new TextBlock { Text = q.Length > 0 ? $"Results for \"{q}\"" : section, FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 10) });
         foreach (var s in items) _content.Children.Add(Row(s));
@@ -249,6 +250,7 @@ internal sealed partial class SettingsWindow : Window
             new("Status Bar", "statusBar.ram", "System memory", "", Bool(() => S.StatusBar.Ram, v => S.StatusBar.Ram = v)),
             new("Status Bar", "statusBar.disk", "Drive free space", "", Bool(() => S.StatusBar.Disk, v => S.StatusBar.Disk = v)),
             new("Status Bar", "statusBar.selection", "Selection info", "", Bool(() => S.StatusBar.Selection, v => S.StatusBar.Selection = v)),
+            new("Status Bar", "statusBar.copilotQuota", "Copilot premium requests", "Remaining premium requests; only while Copilot is enabled and has been used.", Bool(() => S.StatusBar.CopilotQuota, v => S.StatusBar.CopilotQuota = v)),
 
             new("Search", "search.indexRoots", "Index roots", "Folders Quick Search (Ctrl+P) covers, one per line, e.g. your repos folder.", TextList(() => S.Search.IndexRoots, v => S.Search.IndexRoots = v, @"C:\dev")),
             new("Search", "search.indexBookmarks", "Index bookmarked folders", "", Bool(() => S.Search.IndexBookmarks, v => S.Search.IndexBookmarks = v)),
@@ -290,6 +292,12 @@ internal sealed partial class SettingsWindow : Window
         new("Preview", "preview.paneWidth", "Preview pane width", "", Number(() => S.Preview.PaneWidth, v => S.Preview.PaneWidth = v, 220, 1200, 20)),
         new("Preview", "preview.maxTextMegabytes", "Largest file shown as text (MB)", "Bigger files are shown as hex.", Number(() => S.Preview.MaxTextMegabytes, v => S.Preview.MaxTextMegabytes = (int)v, 1, 64)),
         new("Inbox", "inbox.hideDesktopIcons", "Hide desktop icons", "Keeps the desktop clean; use Pollux's Inbox to see its files.", Bool(() => S.Inbox.HideDesktopIcons, v => S.Inbox.HideDesktopIcons = v)),
+        new("Copilot", "copilot.enabled", "Enable Copilot", "Off by default. On: the GitHub Copilot CLI runs as a separate process once you use Copilot; it, not Pollux, talks to GitHub. Not available in the Admin Instance.", Bool(() => S.Copilot.Enabled, v => S.Copilot.Enabled = v)),
+        new("Copilot", "copilot.defaultAgentMode", "Agent Mode of new Chats", "Interactive works step by step with you, Plan only plans, Autopilot keeps working until the task is done. Each Chat can switch.", Choice(() => S.Copilot.DefaultAgentMode, v => S.Copilot.DefaultAgentMode = v)),
+        new("Copilot", "copilot.defaultPermissionMode", "Permission Mode of new Chats", "Manual asks for each action, Assisted lets a second model approve what it judges safe, AllowAll asks for nothing. Guard Rules always apply; your organization may block a mode.", Choice(() => S.Copilot.DefaultPermissionMode, v => S.Copilot.DefaultPermissionMode = v)),
+        new("Copilot", "copilot.proxy", "Copilot proxy", "Proxy for the Copilot CLI only (e.g. http://proxy:8080). Empty = the CLI's own environment.", Text(() => S.Copilot.Proxy ?? "", v => S.Copilot.Proxy = v.Length == 0 ? null : v, "http://proxy:8080")),
+        new("Copilot", "copilot.caCertificates", "Copilot CA certificates", "PEM file with extra CA certificates for the Copilot CLI only, e.g. a corporate root.", Text(() => S.Copilot.CaCertificates ?? "", v => S.Copilot.CaCertificates = v.Length == 0 ? null : v, @"C:\certs\corp.pem")),
+        new("Copilot", "copilot.cliPath", "Copilot CLI path", "Empty = the CLI bundled with Pollux. Another CLI version may not speak Pollux's protocol.", Text(() => S.Copilot.CliPath ?? "", v => S.Copilot.CliPath = v.Length == 0 ? null : v, @"C:\tools\copilot.exe")),
         new("Inbox", "inbox.sortTarget", "Sort Inbox into", "Folder that \"Sort Inbox\" moves files into (by type). Empty = Documents\\Inbox.", Text(() => S.Inbox.SortTarget, v => S.Inbox.SortTarget = v, @"Documents\Inbox")),
         new("Clipboard", "clipboard.enabled", "Record Clipboard History", "Off by default. Keeps every Clip (text, images, file lists) encrypted on this PC only. While on, Pollux keeps running in the background even if that setting is off.", Bool(() => S.Clipboard.Enabled, v => S.Clipboard.Enabled = v)),
         new("Clipboard", "clipboard.globalHotkey", "Global hotkey: Clipboard Stack", "Works from any app while Pollux runs.", Text(() => S.Clipboard.GlobalHotkey, v => S.Clipboard.GlobalHotkey = v, "win+alt+v")),
@@ -305,6 +313,9 @@ internal sealed partial class SettingsWindow : Window
 
     // ---------------- keyboard ----------------
 
+    /// <summary>The settings shown now: no Copilot UI outside its own section while Copilot is off (the status bar's quota).</summary>
+    private IEnumerable<Setting> ShownSettings() => _all.Where(s => CopilotAvailability.ShowsSetting(s.Key, _app.CopilotAvailable));
+
     private void RenderKeyboard()
     {
         _content.Children.Add(new TextBlock { Text = "Keyboard", FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 4) });
@@ -314,7 +325,7 @@ internal sealed partial class SettingsWindow : Window
         _content.Children.Add(open);
 
         var keys = _app.Services.Keys;
-        foreach (var c in CommandCatalog.All.Concat(ExtraFeatures.Commands))
+        foreach (var c in CommandCatalog.All.Concat(ExtraFeatures.Commands).Where(c => CopilotAvailability.AllowsCommand(c.Id, _app.CopilotAvailable)))
         {
             var grid = new Grid { ColumnSpacing = 16, Padding = new Thickness(12, 6, 12, 6), Background = Theme.Brush("PolluxSurfaceBrush"), CornerRadius = new CornerRadius(4), Margin = new Thickness(0, 0, 0, 1) };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

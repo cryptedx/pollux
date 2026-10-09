@@ -11,6 +11,11 @@ public static class Program
     private static int Main(string[] args)
     {
         StartupLog.Mark("main");
+        if (args.Contains(CopilotSelfTestCommand.Flag))
+        {
+            return CopilotSelfTestCommand.Run(args);
+        }
+
         WinRT.ComWrappersSupport.InitializeComWrappers();
 
         // Single instance: a second launch hands its arguments to the resident process and exits.

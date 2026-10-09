@@ -34,8 +34,22 @@ jobs:
         if: matrix.platform == 'x64'
         run: dotnet test --project tests/Pollux.Core.Tests -c Release
 
+      - name: Test copilot
+        if: matrix.platform == 'x64'
+        run: dotnet test --project tests/Pollux.Copilot.Tests -c Release
+
       - name: Publish (Native AOT)
         run: dotnet publish src/Pollux.App -c Release -p:Platform=${{ matrix.platform }} -r ${{ matrix.rid }} -o artifacts/${{ matrix.rid }}
+
+      # The Native AOT build starts its bundled Copilot CLI over stdio and completes the handshake (ADR 0002/0005).
+      # ARM64 cannot run on the x64 runner; it is verified the same way on an ARM64 machine.
+      - name: Copilot self-test
+        if: matrix.platform == 'x64'
+        shell: pwsh
+        run: |
+          $p = Start-Process artifacts/win-x64/Pollux.exe -ArgumentList '--copilot-selftest', "$PWD/copilot-selftest.txt" -Wait -PassThru
+          Get-Content copilot-selftest.txt
+          exit $p.ExitCode
 
       - uses: actions/upload-artifact@v4
         with:

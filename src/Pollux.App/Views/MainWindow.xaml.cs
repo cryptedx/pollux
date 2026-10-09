@@ -9,7 +9,9 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Pollux.App.Services;
 using Pollux.App.ViewModels;
+using Pollux.Copilot.Models;
 using Pollux.Core.Commands;
+using Pollux.Core.Copilot;
 using Pollux.Core.Files;
 using Pollux.Core.Navigation;
 using Pollux.Core.Session;
@@ -61,6 +63,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         AdminBadge.Visibility = IsElevated ? Visibility.Visible : Visibility.Collapsed;
         if (IsElevated) Title = "Pollux (Admin)";
         UpdatesWindow.ResultChanged += OnUpdatesChanged;
+        _app.CopilotQuotaState.Changed += OnCopilotQuotaChanged;
         _app.Transfers.Changed += OnTransferChanged;
         AppWindow.SetPresenter(_presenter); // own instance: casting AppWindow.Presenter fails under Native AOT
         ApplyWindowBounds(session);
@@ -168,10 +171,12 @@ internal sealed partial class MainWindow : Window, IPaneHost
         Services.PlacesChanged -= RenderSidebar;
         Drives.Changed -= OnDrivesChanged;
         UpdatesWindow.ResultChanged -= OnUpdatesChanged;
+        _app.CopilotQuotaState.Changed -= OnCopilotQuotaChanged;
         _app.Transfers.Changed -= OnTransferChanged;
         _statsTimer.Stop();
         _stats?.Dispose();
         _terminal?.Dispose();
+        _copilotPanel?.Dispose();
         foreach (var p in _panes) p.Shutdown();
     }
 
@@ -206,6 +211,30 @@ internal sealed partial class MainWindow : Window, IPaneHost
         UpdatesBadgeText.Text = $"⇪ {n} update{(n == 1 ? "" : "s")}";
     });
 
+    private void OnCopilotQuotaChanged(CopilotQuota? _) => DispatcherQueue.TryEnqueue(ApplyCopilotQuotaBadge);
+
+    /// <summary>Remaining premium requests in the status bar: only while Copilot is available, the item is on and the quota is known.</summary>
+    private void ApplyCopilotQuotaBadge()
+    {
+        var quota = _app.CopilotQuotaState.Latest;
+        var show = quota is not null && _app.CopilotAvailable && Services.Settings.StatusBar.CopilotQuota;
+        CopilotQuotaBadge.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (quota is null || !show) return;
+        CopilotQuotaText.Text = $"Copilot {quota.Compact}";
+        ToolTipService.SetToolTip(CopilotQuotaBadge, quota.Text);
+        CopilotQuotaText.Foreground = Theme.Brush(quota.Level switch
+        {
+            CopilotQuotaLevel.Exhausted => "PolluxBadBrush",
+            CopilotQuotaLevel.Low => "PolluxWarnBrush",
+            _ => "PolluxMutedBrush",
+        });
+    }
+
+    private void CopilotQuotaBadge_Tapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (!_copilotPanelOpen) ToggleCopilotPanel();
+    }
+
     private void UpdatesBadge_Tapped(object sender, TappedRoutedEventArgs e) => _app.ShowUpdates();
 
     // ---------------- settings & theme ----------------
@@ -215,6 +244,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         ApplySettings();
         foreach (var p in _panes) p.ApplySettings();
         _terminal?.SetTheme();
+        _copilotPanel?.SetTheme();
         if (Services.SettingsError is { } err) ShowToast("Settings error: " + err, 6);
     }
 
@@ -249,6 +279,8 @@ internal sealed partial class MainWindow : Window, IPaneHost
         PreviewPane.Visibility = preview.PaneVisible ? Visibility.Visible : Visibility.Collapsed;
         PreviewPaneColumn.Width = preview.PaneVisible ? new GridLength(Math.Clamp(preview.PaneWidth, 220, 1200)) : new GridLength(0);
         if (preview.PaneVisible) SchedulePreviewPane();
+        ApplyCopilotPanel();
+        ApplyCopilotQuotaBadge();
         SecondPaneColumn.Width = _dual ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
         Pane2.Visibility = _dual ? Visibility.Visible : Visibility.Collapsed;
         PanesGrid.ColumnSpacing = _dual ? 6 : 0;
@@ -303,6 +335,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         SchedulePreviewPane();
         FollowPaneInTerminal();
         UpdateDisk();
+        _copilotPanel?.RefreshContext();
     }
 
     private static string ShortPath(string path)
@@ -609,6 +642,8 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
     public void Execute(string id)
     {
+        if (!CopilotAvailability.AllowsCommand(id, _app.CopilotAvailable)) return;
+        if (SelectionActions.IsSelectionAction(id)) { RunSelectionAction(id); return; }
         var p = Active;
         switch (id)
         {
@@ -653,6 +688,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "nav.desktop": p.Navigate(KnownFolders.Desktop); break;
             case "file.open": p.OpenSelected(); break;
             case "file.preview": TogglePreview(); break;
+            case "copilot.togglePanel": ToggleCopilotPanel(); break;
             case "view.togglePreviewPane": Services.Settings.Preview.PaneVisible = !Services.Settings.Preview.PaneVisible; Services.SaveSettings(); break;
             case "file.openWith": ForSingle(Shell.OpenWith); break;
             case "file.rename": _ = RenameAsync(); break;
@@ -800,6 +836,58 @@ internal sealed partial class MainWindow : Window, IPaneHost
     }
 
     private bool _terminalFocused;
+
+    // ---------------- Copilot Panel (one per window, created on first open) ----------------
+
+    private const double CopilotPanelWidth = 380;
+    private CopilotPanel? _copilotPanel;
+    private bool _copilotPanelOpen;
+
+    private void ToggleCopilotPanel()
+    {
+        _copilotPanelOpen = !_copilotPanelOpen;
+        ApplyCopilotPanel();
+        if (!_copilotPanelOpen) Active.FocusList();
+    }
+
+    /// <summary>Shows the Panel when it is open and Copilot is available; disabling Copilot closes it (no Copilot UI anywhere).</summary>
+    private void ApplyCopilotPanel()
+    {
+        if (!_app.CopilotAvailable) _copilotPanelOpen = false;
+        CopilotPane.Visibility = _copilotPanelOpen ? Visibility.Visible : Visibility.Collapsed;
+        CopilotPaneColumn.Width = _copilotPanelOpen ? new GridLength(CopilotPanelWidth) : new GridLength(0);
+        if (_copilotPanelOpen) _copilotPanel ??= new CopilotPanel(CopilotPane, _app, () => { _copilotPanelOpen = false; ApplyCopilotPanel(); }, CopilotContext,
+            new WindowPolluxActions(DispatcherQueue, _panes, () => _activePane, () => _dual, Hwnd, AddBookmark), PickFolderAsync);
+    }
+
+    /// <summary>A folder dialog owned by this window (Copilot Working Folder); null when cancelled.</summary>
+    private async Task<string?> PickFolderAsync()
+    {
+        var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(AppWindow.Id) { SuggestedStartLocation = Microsoft.Windows.Storage.Pickers.PickerLocationId.ComputerFolder };
+        var result = await picker.PickSingleFolderAsync();
+        return result?.Path;
+    }
+
+    /// <summary>Selection actions (context menu "Copilot", palette): a new Chat about the selected entries.</summary>
+    private void RunSelectionAction(string id)
+    {
+        if (SelectionActions.Find(Services.Settings.Copilot, id) is not { } action) return;
+        var chips = Pollux.Copilot.Context.ContextChips.Defaults(CopilotContext());
+        if (!chips.Any(c => c.Kind == Pollux.Copilot.Context.ContextChipKind.Selection)) { ShowToast("Select something first"); return; }
+        _copilotPanelOpen = true;
+        ApplyCopilotPanel();
+        _copilotPanel?.StartChat(action.Prompt, chips);
+    }
+
+    /// <summary>What the next Copilot message may carry: the active Pane, the other one (when dual) and the folders of all Tabs.</summary>
+    private Pollux.Copilot.Context.ContextSnapshot CopilotContext()
+    {
+        static Pollux.Copilot.Context.PaneContext Of(PaneView p) =>
+            new(p.Folder, p.SelectedPaths, [.. p.VisibleItems.Select(i => i.Path)]);
+        IEnumerable<PaneView> panes = _dual ? _panes : [Active];
+        var tabs = panes.SelectMany(p => p.Tabs).Where(t => !t.IsHome).Select(t => t.Location).ToList();
+        return new(Of(Active), _dual ? Of(Other) : null, tabs);
+    }
 
     private void FollowPaneInTerminal()
     {
@@ -1252,10 +1340,13 @@ internal sealed partial class MainWindow : Window, IPaneHost
         if (sel.Count == 1) action(sel[0]);
     }
 
-    private void AddBookmark(string? path)
+    private void AddBookmark(string? path) => AddBookmark(path, null, null);
+
+    /// <summary>Adds a Bookmark (Copilot's pollux_add_bookmark can name it and put it in a group).</summary>
+    private void AddBookmark(string? path, string? name, string? group)
     {
         if (path is null) return;
-        Services.Bookmarks.Add(path, WinPath.Name(path));
+        Services.Bookmarks.Add(path, string.IsNullOrWhiteSpace(name) ? WinPath.Name(path) : name, group ?? "");
         Services.PlacesUpdated();
         var n = Services.Bookmarks.Flat.ToList().FindIndex(b => string.Equals(b.Path, path, StringComparison.OrdinalIgnoreCase)) + 1;
         ShowToast(n is > 0 and <= 9 ? $"Bookmarked {WinPath.Name(path)} — Ctrl+Shift+{n}" : $"Bookmarked {WinPath.Name(path)}");
@@ -1501,10 +1592,13 @@ internal sealed partial class MainWindow : Window, IPaneHost
     {
         var recent = _app.RecentCommands;
         return CommandCatalog.All
-            .Where(c => c.ShowInPalette)
+            .Where(c => c.ShowInPalette && CopilotAvailability.AllowsCommand(c.Id, _app.CopilotAvailable))
             .OrderBy(c => { var i = recent.IndexOf(c.Id); return i < 0 ? int.MaxValue : i; })
             .Select(c => new PaletteItem(c.Title, "", Services.Keys.KeyFor(c.Id)?.ToString() ?? "", () => { _app.NoteCommand(c.Id); Execute(c.Id); }))
-            .Concat(_app.ExtraCommands().Select(c => new PaletteItem(c.Title, "", Services.Keys.KeyFor(c.Id)?.ToString() ?? "", () => Execute(c.Id))))
+            .Concat(_app.CopilotAvailable
+                ? SelectionActions.For(Services.Settings.Copilot).Select(a => new PaletteItem("Copilot: " + a.Title, "", "", () => Execute(a.CommandId)))
+                : [])
+            .Concat(_app.ExtraCommands().Where(c => CopilotAvailability.AllowsCommand(c.Id, _app.CopilotAvailable)).Select(c => new PaletteItem(c.Title, "", Services.Keys.KeyFor(c.Id)?.ToString() ?? "", () => Execute(c.Id))))
             .ToList();
     }
 

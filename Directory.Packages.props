@@ -11,4 +11,10 @@
     <PackageVersion Include="Microsoft.WindowsAppSDK.Runtime" Version="2.5.1" />
     <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Copilot integration (spec .scratch/copilot-integration, ADR 0005). MIT. Its MSBuild targets download the pinned
+         Copilot CLI (SHA256-checked) for the publish RID. Transitive: Microsoft.Extensions.AI.Abstractions,
+         Microsoft.Extensions.Logging.Abstractions. -->
+    <PackageVersion Include="GitHub.Copilot.SDK" Version="1.0.18" />
+  </ItemGroup>
 </Project>

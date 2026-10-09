@@ -5,5 +5,5 @@ Pollux itself makes zero network calls: no telemetry, no crash reporting, no sel
 ## Consequences
 
 - Pollux updates are installed manually.
-- No built-in AI; integration with GitHub Copilot / VS Code is limited to handing off paths and content locally.
+- No built-in AI in the Pollux process; GitHub Copilot runs as an opt-in external process (ADR 0005).
 - Any dependency that phones home is disqualified.

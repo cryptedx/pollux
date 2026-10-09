@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Everything that talks to the GitHub Copilot SDK but needs no WinUI (ADR 0005). Builds and tests on any OS. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- The bundled CLI is RID-specific: only Pollux.App (built per RID) downloads and ships it.
+         Without this, this RID-less project would fetch the build host's CLI (e.g. osx-arm64) and pass it on. -->
+    <CopilotSkipCliDownload>true</CopilotSkipCliDownload>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="GitHub.Copilot.SDK" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Copilot settings (Agent Mode and Permission Mode defaults) live in Pollux.Core. -->
+    <ProjectReference Include="..\Pollux.Core\Pollux.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -46,6 +46,7 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition x:Name="SecondPaneColumn" Width="*" />
                     <ColumnDefinition x:Name="PreviewPaneColumn" Width="0" />
+                    <ColumnDefinition x:Name="CopilotPaneColumn" Width="0" />
                 </Grid.ColumnDefinitions>
                 <views:PaneView x:Name="Pane1" />
                 <views:PaneView x:Name="Pane2" Grid.Column="1" />
@@ -63,6 +64,8 @@
                         <Grid x:Name="PreviewPaneContent" Grid.Row="1" />
                     </Grid>
                 </Border>
+                <Border x:Name="CopilotPane" Grid.Column="3" Visibility="Collapsed" CornerRadius="8,8,0,0" BorderThickness="1"
+                        BorderBrush="{ThemeResource PolluxLineBrush}" Background="{ThemeResource PolluxSurfaceBrush}" />
             </Grid>
             <Border x:Name="TerminalHost" Grid.Row="1" Visibility="Collapsed" Margin="0,6,6,0" CornerRadius="8,8,0,0" BorderThickness="1"
                     BorderBrush="{ThemeResource PolluxLineBrush}" Background="{ThemeResource PolluxSurface2Brush}" />
@@ -110,6 +113,9 @@
                             <StackPanel x:Name="TransfersPanel" Spacing="6" Width="400" />
                         </Flyout>
                     </FlyoutBase.AttachedFlyout>
+                </Border>
+                <Border x:Name="CopilotQuotaBadge" Visibility="Collapsed" Tapped="CopilotQuotaBadge_Tapped" Background="{ThemeResource PolluxSurfaceBrush}" BorderBrush="{ThemeResource PolluxLineBrush}" BorderThickness="1" CornerRadius="4" Padding="6,0">
+                    <TextBlock x:Name="CopilotQuotaText" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxMutedBrush}" />
                 </Border>
                 <Border x:Name="UpdatesBadge" Visibility="Collapsed" Tapped="UpdatesBadge_Tapped" Background="{ThemeResource PolluxAccentSoftBrush}" CornerRadius="4" Padding="6,0">
                     <TextBlock x:Name="UpdatesBadgeText" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxAccentBrush}" />

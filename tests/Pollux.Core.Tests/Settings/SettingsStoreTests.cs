@@ -17,6 +17,13 @@ public sealed class SettingsStoreTests
     }
 
     [TestMethod]
+    public void CopilotQuotaStatusBarItemIsOnByDefaultAndSwitchable()
+    {
+        Assert.IsTrue(SettingsStore.Parse("{}").Settings.StatusBar.CopilotQuota);
+        Assert.IsFalse(SettingsStore.Parse("""{ "statusBar": { "copilotQuota": false } }""").Settings.StatusBar.CopilotQuota);
+    }
+
+    [TestMethod]
     public void ClipboardHotkeyDefaultsToWinAltVAndWinVTakeoverIsOptIn()
     {
         var c = SettingsStore.Parse("{}").Settings.Clipboard;

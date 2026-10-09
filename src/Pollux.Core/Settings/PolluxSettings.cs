@@ -25,6 +25,7 @@ public sealed class PolluxSettings
     public UpdatesSettings Updates { get; set; } = new();
     public InboxSettings Inbox { get; set; } = new();
     public PreviewSettings Preview { get; set; } = new();
+    public CopilotSettings Copilot { get; set; } = new();
     public ClipboardSettings Clipboard { get; set; } = new();
 
     /// <summary>Pollux keeps running after the last window closes: the tray setting is on, or the Clipboard History needs it (ADR 0003).</summary>
@@ -146,6 +147,8 @@ public sealed class StatusBarSettings
     public bool Ram { get; set; } = true;
     public bool Disk { get; set; } = true;
     public bool Selection { get; set; } = true;
+    /// <summary>Remaining Copilot premium requests; only shown while Copilot is enabled and the quota is known.</summary>
+    public bool CopilotQuota { get; set; } = true;
 }
 
 public sealed class TerminalSettings

@@ -205,10 +205,30 @@ internal static unsafe partial class Native
     }
 
     public const uint FO_MOVE = 1, FO_COPY = 2, FO_DELETE = 3, FO_RENAME = 4;
-    public const ushort FOF_MULTIDESTFILES = 0x1, FOF_NOCONFIRMATION = 0x10, FOF_RENAMEONCOLLISION = 0x8, FOF_ALLOWUNDO = 0x40, FOF_NOCONFIRMMKDIR = 0x200, FOF_WANTNUKEWARNING = 0x4000;
+    public const ushort FOF_MULTIDESTFILES = 0x1, FOF_NOCONFIRMATION = 0x10, FOF_RENAMEONCOLLISION = 0x8, FOF_WANTMAPPINGHANDLE = 0x20, FOF_ALLOWUNDO = 0x40, FOF_NOCONFIRMMKDIR = 0x200, FOF_WANTNUKEWARNING = 0x4000;
 
     [LibraryImport("shell32.dll")]
     public static partial int SHFileOperationW(SHFILEOPSTRUCTW* op);
+
+    /// <summary>What SHFILEOPSTRUCTW.hNameMappings points to with FOF_WANTMAPPINGHANDLE: the entries renamed on collision.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SHNAMEMAPPINGHANDLE
+    {
+        public uint uNumberOfMappings;
+        public SHNAMEMAPPINGW* lpSHNameMapping;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SHNAMEMAPPINGW
+    {
+        public char* pszOldPath;
+        public char* pszNewPath;
+        public int cchOldPath;
+        public int cchNewPath;
+    }
+
+    [LibraryImport("shell32.dll")]
+    public static partial void SHFreeNameMappings(nint hNameMappings);
 
     [LibraryImport("shell32.dll", StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]

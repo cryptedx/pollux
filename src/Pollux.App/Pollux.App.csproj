@@ -46,9 +46,31 @@
     <PackageReference Include="Microsoft.WindowsAppSDK.DWrite" />
     <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
+    <!-- Referenced here (not only via Pollux.Copilot) so its MSBuild targets download the pinned Copilot CLI for
+         this build's RID (win-x64 / win-arm64), SHA256-checked, into runtimes\<rid>\native (ADR 0005). -->
+    <PackageReference Include="GitHub.Copilot.SDK" />
   </ItemGroup>
+
+  <!-- Bundled Copilot CLI (ADR 0005), after the SDK's _RegisterCopilotCliForCopy has listed its files:
+       - ship the CLI license next to it (its redistribution terms require a copy);
+       - drop copilot_runtime.dll, the SDK's renamed copy of runtime.node for in-process hosting (~95 MB).
+         Pollux only talks to the CLI over stdio, where copilot-runtime.exe loads runtime.node itself. -->
+  <Target Name="_PolluxCopilotCliPayload" AfterTargets="_RegisterCopilotCliForCopy" Condition="'$(_CopilotRid)' != '' And '$(CopilotSkipCliDownload)' != 'true'">
+    <PropertyGroup>
+      <_PolluxCopilotNative>runtimes\$(_CopilotRid)\native</_PolluxCopilotNative>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_CopilotCacheDir)\LICENSE.md')" Text="Copilot CLI license not found at '$(_CopilotCacheDir)\LICENSE.md'." />
+    <ItemGroup>
+      <!-- Matched by target path: its source file is runtime.node, which must stay. -->
+      <_PolluxCopilotDrop Include="@(ContentWithTargetPath)" Condition="'%(ContentWithTargetPath.TargetPath)' == '$(_PolluxCopilotNative)\copilot_runtime.dll'" />
+      <ContentWithTargetPath Remove="@(_PolluxCopilotDrop)" MatchOnMetadata="TargetPath" />
+      <ContentWithTargetPath Include="$(_CopilotCacheDir)\LICENSE.md" TargetPath="$(_PolluxCopilotNative)\LICENSE.md"
+                             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <ProjectReference Include="..\Pollux.Core\Pollux.Core.csproj" />
+    <ProjectReference Include="..\Pollux.Copilot\Pollux.Copilot.csproj" />
   </ItemGroup>
 </Project>

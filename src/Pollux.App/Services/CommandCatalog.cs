@@ -86,6 +86,7 @@ internal static class CommandCatalog
         new("terminal.open", "Terminal: Open Windows Terminal Here", "ctrl+alt+t"),
         new("terminal.openPowerShell", "Terminal: Open PowerShell Here"),
         new("integration.vscode", "Open in VS Code", "ctrl+shift+e"),
+        new("copilot.togglePanel", "Copilot: Toggle Panel", "ctrl+shift+i"),
         new("integration.copilot", "Open in GitHub Copilot App"),
         new("recent.clear", "Recent: Clear"),
         new("workspace.switch", "Workspace: Switch…", "ctrl+alt+w"),

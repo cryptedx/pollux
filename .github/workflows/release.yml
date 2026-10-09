@@ -30,6 +30,9 @@ jobs:
       - name: Test core
         if: matrix.platform == 'x64'
         run: dotnet test --project tests/Pollux.Core.Tests -c Release
+      - name: Test copilot
+        if: matrix.platform == 'x64'
+        run: dotnet test --project tests/Pollux.Copilot.Tests -c Release
       - name: Publish (Native AOT)
         run: dotnet publish src/Pollux.App -c Release -p:Platform=${{ matrix.platform }} -r ${{ matrix.rid }} -o out/Pollux
       - name: Package
