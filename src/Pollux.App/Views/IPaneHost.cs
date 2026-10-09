@@ -7,6 +7,9 @@ internal interface IPaneHost
 {
     AppServices Services { get; }
     nint Hwnd { get; }
+
+    /// <summary>The window is hidden (pre-created for a resident Pollux): it must not take the keyboard focus.</summary>
+    bool IsHidden { get; }
     void Execute(string commandId);
     void OnPaneActivated(PaneView pane);
     void OnPaneStateChanged(PaneView pane);

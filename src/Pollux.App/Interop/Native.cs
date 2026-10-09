@@ -40,6 +40,10 @@ internal static unsafe partial class Native
     [LibraryImport("user32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     public static partial nint CreateWindowExW(uint exStyle, string className, string windowName, uint style, int x, int y, int w, int h, nint parent, nint menu, nint instance, nint param);
 
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool DestroyWindow(nint hwnd);
+
     [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
     public static partial uint RegisterWindowMessageW(string name);
 
@@ -98,6 +102,7 @@ internal static unsafe partial class Native
 
     public const uint MF_STRING = 0;
     public const uint MF_SEPARATOR = 0x800;
+    public const uint MF_CHECKED = 0x8;
     public const uint TPM_RETURNCMD = 0x100;
     public const uint TPM_RIGHTBUTTON = 0x2;
 
@@ -163,6 +168,12 @@ internal static unsafe partial class Native
 
     [LibraryImport("user32.dll")]
     public static partial nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial int MessageBoxW(nint hwnd, string text, string caption, uint type);
+
+    public const uint MB_YESNO = 0x4, MB_ICONQUESTION = 0x20, MB_SETFOREGROUND = 0x10000, MB_TOPMOST = 0x40000;
+    public const int IDYES = 6;
 
     public const int WH_KEYBOARD_LL = 13;
     public const int WM_KEYDOWN = 0x100, WM_KEYUP = 0x101, WM_SYSKEYDOWN = 0x104, WM_SYSKEYUP = 0x105;
@@ -281,4 +292,106 @@ internal static unsafe partial class Native
     // ---- dwm ----
     [LibraryImport("dwmapi.dll")]
     public static partial int DwmSetWindowAttribute(nint hwnd, uint attribute, void* value, uint size);
+
+    // ---- dpapi (Clipboard History at rest) ----
+    public const uint CRYPTPROTECT_UI_FORBIDDEN = 0x1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DATA_BLOB
+    {
+        public uint cbData;
+        public nint pbData;
+    }
+
+    [LibraryImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CryptProtectData(DATA_BLOB* dataIn, nint description, nint optionalEntropy, nint reserved, nint promptStruct, uint flags, DATA_BLOB* dataOut);
+
+    [LibraryImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CryptUnprotectData(DATA_BLOB* dataIn, nint description, nint optionalEntropy, nint reserved, nint promptStruct, uint flags, DATA_BLOB* dataOut);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial nint LocalFree(nint memory);
+
+    // ---- clipboard capture (Clipboard History) ----
+    public const int WM_CLIPBOARDUPDATE = 0x031D;
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool AddClipboardFormatListener(nint hwnd);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool RemoveClipboardFormatListener(nint hwnd);
+
+    [LibraryImport("user32.dll")]
+    public static partial uint GetClipboardSequenceNumber();
+
+    [LibraryImport("user32.dll")]
+    public static partial nint GetClipboardOwner();
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial uint RegisterClipboardFormatW(string name);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsClipboardFormatAvailable(uint format);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool OpenClipboard(nint owner);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseClipboard();
+
+    [LibraryImport("user32.dll")]
+    public static partial nint GetClipboardData(uint format);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial nint GlobalLock(nint memory);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GlobalUnlock(nint memory);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial nuint GlobalSize(nint memory);
+
+    // ---- processes (source app of a Clip, paste back target) ----
+    public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+    [LibraryImport("user32.dll")]
+    public static partial nint GetForegroundWindow();
+
+    [LibraryImport("user32.dll")]
+    public static partial uint GetWindowThreadProcessId(nint hwnd, out uint processId);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool QueryFullProcessImageNameW(nint process, uint flags, char* name, ref uint size);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseHandle(nint handle);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsWindow(nint hwnd);
+
+    // ---- token elevation (paste back: UIPI blocks Ctrl+V into elevated windows) ----
+    public const uint TOKEN_QUERY = 0x0008;
+    public const int TokenElevation = 20;
+
+    [LibraryImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool OpenProcessToken(nint process, uint access, out nint token);
+
+    [LibraryImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetTokenInformation(nint token, int infoClass, void* info, uint length, out uint returnLength);
 }

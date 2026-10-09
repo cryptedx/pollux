@@ -208,7 +208,7 @@ internal sealed partial class SettingsWindow : Window
             new("Appearance", "appearance.monoFont", "Monospace font", "Paths, sizes, status bar and palette.", Text(() => S.Appearance.MonoFont, v => S.Appearance.MonoFont = v)),
             new("Appearance", "appearance.fontSize", "Font size", "", Number(() => S.Appearance.FontSize, v => S.Appearance.FontSize = v, 9, 24, 0.5)),
 
-            new("Startup", "app.resident", "Keep running in the background", "Tray icon; windows open instantly. Off: Pollux quits when the last window closes.", Bool(() => S.App.Resident, v => S.App.Resident = v)),
+            new("Startup", "app.resident", "Keep running in the background", "Tray icon; windows open instantly. Off: Pollux quits when the last window closes (unless the Clipboard History is on).", Bool(() => S.App.Resident, v => S.App.Resident = v)),
             new("Startup", "app.startWithWindows", "Start with Windows", "Starts hidden in the tray at login.", Bool(() => S.App.StartWithWindows, v => S.App.StartWithWindows = v)),
             new("Startup", "app.restoreWindows", "Restore windows", "Reopen windows with their panes and tabs.", Bool(() => S.App.RestoreWindows, v => S.App.RestoreWindows = v)),
             new("Startup", "app.takeOverWinE", "Open Pollux with Win+E", "Replaces Explorer's Win+E while Pollux runs. Turn off to restore Explorer.", Bool(() => S.App.TakeOverWinE, v => S.App.TakeOverWinE = v)),
@@ -273,7 +273,7 @@ internal sealed partial class SettingsWindow : Window
         _all.AddRange(ExtraSettings());
     }
 
-    /// <summary>Settings for Notes, Downloads, Updates and Inbox.</summary>
+    /// <summary>Settings for Notes, Downloads, Updates, Inbox and the Clipboard History.</summary>
     private IEnumerable<Setting> ExtraSettings() =>
     [
         new("Notes", "notes.folder", "Notes folder", "Empty = Documents\\Pollux\\Notes. Plain Markdown files.", Text(() => S.Notes.Folder, v => S.Notes.Folder = v, @"Documents\Pollux\Notes")),
@@ -291,6 +291,16 @@ internal sealed partial class SettingsWindow : Window
         new("Preview", "preview.maxTextMegabytes", "Largest file shown as text (MB)", "Bigger files are shown as hex.", Number(() => S.Preview.MaxTextMegabytes, v => S.Preview.MaxTextMegabytes = (int)v, 1, 64)),
         new("Inbox", "inbox.hideDesktopIcons", "Hide desktop icons", "Keeps the desktop clean; use Pollux's Inbox to see its files.", Bool(() => S.Inbox.HideDesktopIcons, v => S.Inbox.HideDesktopIcons = v)),
         new("Inbox", "inbox.sortTarget", "Sort Inbox into", "Folder that \"Sort Inbox\" moves files into (by type). Empty = Documents\\Inbox.", Text(() => S.Inbox.SortTarget, v => S.Inbox.SortTarget = v, @"Documents\Inbox")),
+        new("Clipboard", "clipboard.enabled", "Record Clipboard History", "Off by default. Keeps every Clip (text, images, file lists) encrypted on this PC only. While on, Pollux keeps running in the background even if that setting is off.", Bool(() => S.Clipboard.Enabled, v => S.Clipboard.Enabled = v)),
+        new("Clipboard", "clipboard.globalHotkey", "Global hotkey: Clipboard Stack", "Works from any app while Pollux runs.", Text(() => S.Clipboard.GlobalHotkey, v => S.Clipboard.GlobalHotkey = v, "win+alt+v")),
+        new("Clipboard", "clipboard.takeOverWinV", "Open the Clipboard Stack with Win+V", "Turns off Windows' own clipboard history while Pollux runs and takes over Win+V. Turn off to restore Windows (also on quit and uninstall).", Bool(() => S.Clipboard.TakeOverWinV, v => S.Clipboard.TakeOverWinV = v)),
+        new("Clipboard", "clipboard.paused", "Pause", "Copies are not recorded while paused. Also in the tray menu and the command palette.", Bool(() => S.Clipboard.Paused, v => S.Clipboard.Paused = v)),
+        new("Clipboard", "clipboard.excludeProcesses", "Never record copies from", "Process names, one per line. Password managers that mark their copies as private are always skipped.", TextList(() => S.Clipboard.ExcludeProcesses, v => S.Clipboard.ExcludeProcesses = v, "KeePass")),
+        new("Clipboard", "clipboard.maxTextKilobytes", "Largest text Clip (KB)", "Larger copies are not recorded (noted in logs\\pollux.log). 0 = no limit.", Number(() => S.Clipboard.MaxTextKilobytes, v => S.Clipboard.MaxTextKilobytes = (int)v, 0, 102400, 64)),
+        new("Clipboard", "clipboard.maxImageMegabytes", "Largest image Clip (MB)", "Larger copies are not recorded. 0 = no limit.", Number(() => S.Clipboard.MaxImageMegabytes, v => S.Clipboard.MaxImageMegabytes = (int)v, 0, 500)),
+        new("Clipboard", "clipboard.maxClips", "Keep up to N Clips", "Older Clips rotate out; Kept Clips never do. 0 = no limit.", Number(() => S.Clipboard.MaxClips, v => S.Clipboard.MaxClips = (int)v, 0, 10000, 50)),
+        new("Clipboard", "clipboard.maxAgeDays", "Keep Clips for (days)", "Whichever limit hits first. 0 = no limit.", Number(() => S.Clipboard.MaxAgeDays, v => S.Clipboard.MaxAgeDays = (int)v, 0, 3650)),
+        new("Clipboard", "clipboard.pasteAsFile", "Ctrl+V creates a file", "In a folder, Ctrl+V with text or an image (and no files) on the clipboard creates a .txt or .png. Files still paste as a Transfer.", Bool(() => S.Clipboard.PasteAsFile, v => S.Clipboard.PasteAsFile = v)),
     ];
 
     // ---------------- keyboard ----------------

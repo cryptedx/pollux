@@ -6,23 +6,30 @@ using Pollux.App.Interop;
 namespace Pollux.App.Services;
 
 /// <summary>
-/// Opt-in Win+E takeover via a low-level keyboard hook (works without admin; Win+E cannot be taken with RegisterHotKey).
-/// Turning it off removes the hook, which fully restores Explorer's behaviour.
+/// Opt-in Win+E and Win+V takeover via one low-level keyboard hook (works without admin; neither can be taken with RegisterHotKey).
+/// Turning both off removes the hook, which fully restores Windows' behaviour.
 /// </summary>
 internal static unsafe class WinEHook
 {
-    private const uint VK_E = 0x45, VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_MASK = 0xE8;
+    private const uint VK_E = 0x45, VK_V = 0x56, VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_MASK = 0xE8;
     private static nint _hook;
     private static DispatcherQueue? _dispatcher;
     private static Action? _onWinE;
+    private static Action? _onWinV;
 
     public static bool IsActive => _hook != 0;
 
-    public static void Enable(DispatcherQueue dispatcher, Action onWinE)
+    /// <summary>Sets the handlers; a null handler leaves that key to Windows. The hook exists only while one is set.</summary>
+    public static void Apply(DispatcherQueue dispatcher, Action? onWinE, Action? onWinV)
     {
         _dispatcher = dispatcher;
         _onWinE = onWinE;
-        if (_hook == 0)
+        _onWinV = onWinV;
+        if (onWinE is null && onWinV is null)
+        {
+            Disable();
+        }
+        else if (_hook == 0)
         {
             _hook = Native.SetWindowsHookExW(Native.WH_KEYBOARD_LL, &HookProc, Native.GetModuleHandleW(null), 0);
         }
@@ -30,6 +37,8 @@ internal static unsafe class WinEHook
 
     public static void Disable()
     {
+        _onWinE = null;
+        _onWinV = null;
         if (_hook != 0)
         {
             Native.UnhookWindowsHookEx(_hook);
@@ -43,15 +52,15 @@ internal static unsafe class WinEHook
         if (code >= 0 && (wParam == Native.WM_KEYDOWN || wParam == Native.WM_SYSKEYDOWN))
         {
             var k = (Native.KBDLLHOOKSTRUCT*)lParam;
-            if (k->vkCode == VK_E && WinDown() && !OtherModifiersDown())
+            var action = k->vkCode == VK_E ? _onWinE : k->vkCode == VK_V ? _onWinV : null;
+            if (action is not null && WinDown() && !OtherModifiersDown())
             {
                 // Tell the shell a non-Win key was pressed, so releasing Win does not open the Start menu.
                 var inputs = stackalloc Native.INPUT[2];
                 inputs[0] = new Native.INPUT { type = 1, ki = new Native.KEYBDINPUT { wVk = (ushort)VK_MASK } };
                 inputs[1] = new Native.INPUT { type = 1, ki = new Native.KEYBDINPUT { wVk = (ushort)VK_MASK, dwFlags = 2 } };
                 Native.SendInput(2, inputs, sizeof(Native.INPUT));
-                var action = _onWinE;
-                if (action is not null) _dispatcher?.TryEnqueue(() => action());
+                _dispatcher?.TryEnqueue(() => action());
                 return 1;
             }
         }

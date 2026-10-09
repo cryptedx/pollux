@@ -12,7 +12,7 @@ namespace Pollux.App.Services;
 internal sealed unsafe class TrayHost : IDisposable
 {
     private const uint TrayCallback = Native.WM_APP + 1;
-    private const int MenuNewWindow = 1, MenuDownloads = 2, MenuNotes = 3, MenuSettings = 4, MenuUpdates = 5, MenuQuit = 9;
+    private const int MenuNewWindow = 1, MenuDownloads = 2, MenuNotes = 3, MenuSettings = 4, MenuUpdates = 5, MenuClipboardPause = 6, MenuQuit = 9;
 
     private static TrayHost? _instance;
     private readonly DispatcherQueue _dispatcher;
@@ -36,7 +36,14 @@ internal sealed unsafe class TrayHost : IDisposable
     public event Action? NotesRequested;
     public event Action? SettingsRequested;
     public event Action? UpdatesRequested;
+    public event Action? ClipboardPauseRequested;
     public event Action? QuitRequested;
+
+    /// <summary>Shows "Pause Clipboard History" in the menu while the Clipboard History is on.</summary>
+    public bool ClipboardHistoryOn { get; set; }
+
+    /// <summary>Checkmark of "Pause Clipboard History".</summary>
+    public bool ClipboardPaused { get; set; }
 
     public nint Handle => _hwnd;
 
@@ -63,6 +70,7 @@ internal sealed unsafe class TrayHost : IDisposable
 
     public void HideIcon()
     {
+        _tooltip = null; // not re-added when Explorer restarts
         var data = NewData();
         Native.Shell_NotifyIconW(Native.NIM_DELETE, &data);
     }
@@ -170,6 +178,11 @@ internal sealed unsafe class TrayHost : IDisposable
         Native.AppendMenuW(menu, Native.MF_STRING, MenuDownloads, "Downloads");
         Native.AppendMenuW(menu, Native.MF_STRING, MenuNotes, "Notes");
         Native.AppendMenuW(menu, Native.MF_STRING, MenuUpdates, "App updates (winget)…");
+        if (ClipboardHistoryOn)
+        {
+            Native.AppendMenuW(menu, Native.MF_STRING | (ClipboardPaused ? Native.MF_CHECKED : 0), MenuClipboardPause, "Pause Clipboard History");
+        }
+
         Native.AppendMenuW(menu, Native.MF_SEPARATOR, 0, null);
         Native.AppendMenuW(menu, Native.MF_STRING, MenuSettings, "Settings");
         Native.AppendMenuW(menu, Native.MF_STRING, MenuQuit, "Quit Pollux");
@@ -184,6 +197,7 @@ internal sealed unsafe class TrayHost : IDisposable
             MenuNotes => NotesRequested,
             MenuSettings => SettingsRequested,
             MenuUpdates => UpdatesRequested,
+            MenuClipboardPause => ClipboardPauseRequested,
             MenuQuit => QuitRequested,
             _ => null,
         });

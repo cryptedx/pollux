@@ -72,6 +72,24 @@ _Avoid_: Desktop (when meaning the Pollux view)
 The compact popup listing the Downloads folder, opened from the tray without bringing up a full window.
 _Avoid_: Downloads flyout, downloads popup
 
+## Clipboard
+
+**Clip**:
+One item Pollux captured when something was copied: text, an image or a list of files.
+_Avoid_: Entry, item (alone)
+
+**Clipboard History**:
+All Clips Pollux has captured, newest first; older Clips rotate out unless kept.
+_Avoid_: Clipboard manager, clipboard log
+
+**Kept Clip**:
+A Clip the user chose to keep; it never rotates out of the Clipboard History.
+_Avoid_: Pin, favorite, snippet
+
+**Clipboard Stack**:
+The popup opened from anywhere to search the Clipboard History and paste a Clip.
+_Avoid_: Clipboard flyout, Win+V menu
+
 ## Privileges
 
 **Admin Instance**:

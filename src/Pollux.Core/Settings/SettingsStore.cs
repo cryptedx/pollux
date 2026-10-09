@@ -47,6 +47,8 @@ public static class SettingsStore
         s.Updates.IgnoredPackages ??= [];
         s.Inbox ??= new();
         s.Preview ??= new();
+        s.Clipboard ??= new();
+        s.Clipboard.ExcludeProcesses ??= [];
         s.Files.OperationEngine ??= "pollux";
         s.Appearance.UiFont ??= "Segoe UI Variable Text";
         s.Appearance.MonoFont ??= "Cascadia Mono";

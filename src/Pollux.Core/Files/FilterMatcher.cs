@@ -27,6 +27,21 @@ public static class FilterMatcher
         return matchInitials ? MatchInitials(name, query) : FilterMatch.None;
     }
 
+    /// <summary>True if <paramref name="query"/> matches the word initials of <paramref name="text"/> (no substring check).</summary>
+    public static bool MatchesInitials(ReadOnlySpan<char> text, string query)
+    {
+        var q = 0;
+        for (var i = 0; i < text.Length && q < query.Length; i++)
+        {
+            if (IsWordStart(text, i) && char.ToLowerInvariant(text[i]) == char.ToLowerInvariant(query[q]))
+            {
+                q++;
+            }
+        }
+
+        return q == query.Length;
+    }
+
     private static FilterMatch MatchInitials(string name, string query)
     {
         Span<int> hits = query.Length <= 64 ? stackalloc int[query.Length] : new int[query.Length];
@@ -53,7 +68,7 @@ public static class FilterMatcher
         return new FilterMatch(true, ranges);
     }
 
-    private static bool IsWordStart(string s, int i)
+    private static bool IsWordStart(ReadOnlySpan<char> s, int i)
     {
         if (i == 0)
         {

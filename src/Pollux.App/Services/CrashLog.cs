@@ -17,7 +17,21 @@ internal static class CrashLog
             Directory.CreateDirectory(dir);
             File.AppendAllText(Path.Combine(dir, "trace.log"), $"{DateTime.Now:HH:mm:ss.fff} {message}{Environment.NewLine}");
         }
-        catch (IOException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+        }
+    }
+
+    /// <summary>A notable event worth a line in logs\pollux.log (e.g. a Clip not recorded for its size). Never pass clipboard content.</summary>
+    public static void Info(string message)
+    {
+        try
+        {
+            var dir = PolluxPaths.Current().LogsDirectory;
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "pollux.log"), $"{DateTime.Now:s} {message}{Environment.NewLine}");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
         }
     }
@@ -30,7 +44,7 @@ internal static class CrashLog
             Directory.CreateDirectory(dir);
             File.AppendAllText(Path.Combine(dir, "errors.log"), $"{DateTime.Now:s} {ex}{Environment.NewLine}{Environment.NewLine}");
         }
-        catch (IOException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
         }
     }

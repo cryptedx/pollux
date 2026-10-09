@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Pollux.App.Views;
+using Pollux.Core.Clipboard;
 using Pollux.Core.Commands;
 using Pollux.Core.Files;
 using Pollux.Core.Inbox;
@@ -13,6 +14,7 @@ namespace Pollux.App.Services;
 internal static class ExtraFeatures
 {
     private static DownloadsStack? _downloads;
+    private static ClipboardStack? _clipboardStack;
     private static NotesWindow? _notes;
     private static UpdatesWindow? _updates;
 
@@ -21,6 +23,10 @@ internal static class ExtraFeatures
         new("downloads.show", "Downloads: Show Downloads Stack", "ctrl+shift+o"),
         new("notes.show", "Notes: Open Notes"),
         new("notes.new", "Notes: New Note", "ctrl+alt+m"),
+        new("clipboard.show", "Clipboard: Open Clipboard Stack"),
+        new("clipboard.clear", "Clipboard: Clear History"),
+        new("clipboard.pause", "Clipboard: Pause Capture"),
+        new("clipboard.resume", "Clipboard: Resume Capture"),
         new("updates.show", "Updates: Show App Updates (winget)…"),
         new("app.restartAsAdmin", "Pollux: Open Admin Instance Here (elevated)"),
         new("inbox.open", "Inbox: Open Desktop as Inbox"),
@@ -38,6 +44,8 @@ internal static class ExtraFeatures
     public static void Shutdown()
     {
         _downloads?.Close();
+        _clipboardStack?.Close();
+        ClipboardPasteBack.Shutdown();
         _notes?.SaveNow();
         _notes?.Close();
         _updates?.Close();
@@ -48,6 +56,32 @@ internal static class ExtraFeatures
         _downloads ??= new DownloadsStack(app);
         _downloads.Toggle();
     }
+
+    /// <summary>
+    /// The Clipboard Stack over <paramref name="history"/>, created once and kept hidden between uses.
+    /// <paramref name="readImage"/> loads an image Clip's bytes; <paramref name="changed"/> runs after the Stack changed the history (save it).
+    /// </summary>
+    public static ClipboardStack GetClipboardStack(App app, ClipboardHistory history, Func<Clip, byte[]?> readImage, Action changed)
+    {
+        if (_clipboardStack is null)
+        {
+            _clipboardStack = new ClipboardStack(app, history, readImage, changed);
+            _clipboardStack.PasteRequested += (clip, onlyCopy) => _ = ClipboardPasteBack.PasteAsync(clip, onlyCopy, history, readImage, changed);
+        }
+
+        return _clipboardStack;
+    }
+
+    /// <summary>Opens the Clipboard Stack, or closes it when it is open. Remembers the active window first: Enter pastes there.</summary>
+    public static void ShowClipboardStack(App app, ClipboardHistory history, Func<Clip, byte[]?> readImage, Action changed)
+    {
+        var stack = GetClipboardStack(app, history, readImage, changed);
+        if (!stack.IsOpen) ClipboardPasteBack.RememberTarget();
+        stack.Toggle();
+    }
+
+    /// <summary>Re-renders an open Clipboard Stack after a new Clip arrived.</summary>
+    public static void RefreshClipboardStack() => _clipboardStack?.Refresh();
 
     public static void ShowNotes(App app, bool newNote)
     {
@@ -78,6 +112,7 @@ internal static class ExtraFeatures
             case "downloads.show": ShowDownloads(app); return true;
             case "notes.show": ShowNotes(app, newNote: false); return true;
             case "notes.new": ShowNotes(app, newNote: true); return true;
+            case "clipboard.show" or "clipboard.clear" or "clipboard.pause" or "clipboard.resume": return ClipboardCommands.Execute(id, window);
             case "updates.show": ShowUpdates(app); return true;
             case "app.restartAsAdmin": OpenAdminInstance(window); return true;
             case "inbox.open": window.Execute("nav.desktop"); return true;

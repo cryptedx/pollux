@@ -17,6 +17,23 @@ public sealed class SettingsStoreTests
     }
 
     [TestMethod]
+    public void ClipboardHotkeyDefaultsToWinAltVAndWinVTakeoverIsOptIn()
+    {
+        var c = SettingsStore.Parse("{}").Settings.Clipboard;
+        Assert.AreEqual("win+alt+v", c.GlobalHotkey);
+        Assert.IsFalse(c.TakeOverWinV);
+        Assert.IsTrue(SettingsStore.Parse("""{ "clipboard": { "takeOverWinV": true } }""").Settings.Clipboard.TakeOverWinV);
+    }
+
+    [TestMethod]
+    public void ClipboardPasteAsFileIsOnByDefaultAndCanBeTurnedOff()
+    {
+        Assert.IsTrue(SettingsStore.Parse("{}").Settings.Clipboard.PasteAsFile);
+        Assert.IsFalse(SettingsStore.Parse("""{ "clipboard": { "pasteAsFile": false } }""").Settings.Clipboard.PasteAsFile);
+        Assert.IsTrue(SettingsStore.Parse("""{ "clipboard": null }""").Settings.Clipboard.PasteAsFile);
+    }
+
+    [TestMethod]
     public void PartialOverrideKeepsOtherDefaults()
     {
         var result = SettingsStore.Parse("""{ "appearance": { "theme": "dark" } }""");
@@ -92,5 +109,47 @@ public sealed class SettingsStoreTests
             StringAssert.Contains(File.ReadAllText(file), "\"appearance\"");
         }
         finally { dir.Delete(true); }
+    }
+    [TestMethod]
+    public void ClipboardHistoryIsOffByDefault()
+    {
+        var clipboard = SettingsStore.Parse("{}").Settings.Clipboard;
+
+        Assert.IsFalse(clipboard.Enabled);
+        Assert.IsFalse(clipboard.Paused);
+        Assert.AreEqual(1024, clipboard.MaxTextKilobytes);
+        Assert.AreEqual(20, clipboard.MaxImageMegabytes);
+        Assert.AreEqual(500, clipboard.MaxClips);
+        Assert.AreEqual(30, clipboard.MaxAgeDays);
+        Assert.AreEqual(0, clipboard.ExcludeProcesses.Count);
+    }
+
+    [TestMethod]
+    public void NullClipboardSectionYieldsDefaults()
+    {
+        var clipboard = SettingsStore.Parse("""{ "clipboard": { "excludeProcesses": null } }""").Settings.Clipboard;
+
+        Assert.IsNotNull(clipboard.ExcludeProcesses);
+        Assert.IsNotNull(SettingsStore.Parse("""{ "clipboard": null }""").Settings.Clipboard);
+    }
+
+    [TestMethod]
+    public void ClipboardRetentionComesFromSettings()
+    {
+        var clipboard = SettingsStore.Parse("""{ "clipboard": { "maxClips": 100, "maxAgeDays": 0 } }""").Settings.Clipboard;
+
+        Assert.AreEqual(new Pollux.Core.Clipboard.ClipRetention(100, 0), clipboard.Retention);
+    }
+    [TestMethod]
+    public void ClipboardHistoryKeepsPolluxResidentEvenWithoutTheTraySetting()
+    {
+        var settings = SettingsStore.Parse("""{ "app": { "resident": false } }""").Settings;
+        Assert.IsFalse(settings.KeepsResident);
+
+        settings.Clipboard.Enabled = true;
+        Assert.IsTrue(settings.KeepsResident);
+
+        Assert.IsTrue(SettingsStore.Parse("{}").Settings.KeepsResident);
+        Assert.IsFalse(SettingsStore.Serialize(settings).Contains("keepsResident", StringComparison.Ordinal));
     }
 }

@@ -25,6 +25,38 @@ public sealed class PolluxSettings
     public UpdatesSettings Updates { get; set; } = new();
     public InboxSettings Inbox { get; set; } = new();
     public PreviewSettings Preview { get; set; } = new();
+    public ClipboardSettings Clipboard { get; set; } = new();
+
+    /// <summary>Pollux keeps running after the last window closes: the tray setting is on, or the Clipboard History needs it (ADR 0003).</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool KeepsResident => App.Resident || Clipboard.Enabled;
+}
+
+public sealed class ClipboardSettings
+{
+    /// <summary>Record every Clip into the Clipboard History. Opt-in; while on, Pollux stays resident even if App.Resident is off.</summary>
+    public bool Enabled { get; set; }
+    /// <summary>Stop recording Clips for now without turning the Clipboard History off.</summary>
+    public bool Paused { get; set; }
+    /// <summary>Larger text copies are not recorded.</summary>
+    public int MaxTextKilobytes { get; set; } = 1024;
+    /// <summary>Larger image copies are not recorded.</summary>
+    public int MaxImageMegabytes { get; set; } = 20;
+    /// <summary>At most this many Clips (Kept Clips not counted); 0 = no limit.</summary>
+    public int MaxClips { get; set; } = 500;
+    /// <summary>Clips older than this rotate out (Kept Clips never do); 0 = no limit.</summary>
+    public int MaxAgeDays { get; set; } = 30;
+    /// <summary>Process names (e.g. "KeePass") whose copies are never recorded.</summary>
+    public List<string> ExcludeProcesses { get; set; } = [];
+    /// <summary>Ctrl+V in a folder creates a .txt or .png from a Clip's text or image when the clipboard holds no files.</summary>
+    public bool PasteAsFile { get; set; } = true;
+    /// <summary>Global hotkey that opens the Clipboard Stack.</summary>
+    public string GlobalHotkey { get; set; } = "win+alt+v";
+    /// <summary>Opt-in: Win+V opens the Clipboard Stack instead of Windows' clipboard history.</summary>
+    public bool TakeOverWinV { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Clipboard.ClipRetention Retention => new(MaxClips, MaxAgeDays);
 }
 
 public sealed class PreviewSettings

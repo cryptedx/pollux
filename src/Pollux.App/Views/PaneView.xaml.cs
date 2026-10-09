@@ -150,6 +150,9 @@ public sealed partial class PaneView : UserControl
 
     internal void FocusList()
     {
+        // Focusing an element of a hidden window activates it and takes the activation from Pollux's visible windows
+        // (e.g. the Clipboard Stack opened on a cold start).
+        if (_host.IsHidden) return;
         if (Tab.IsHome)
         {
             HomeHost.Focus(FocusState.Programmatic);

@@ -2,8 +2,10 @@ using System.Diagnostics;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
+using Pollux.App.Interop;
 using Pollux.App.Services;
 using Pollux.App.Views;
+using Pollux.Core.Clipboard;
 using Pollux.Core.Commands;
 using Pollux.Core.Session;
 
@@ -15,8 +17,11 @@ public partial class App : Application
     private readonly List<MainWindow> _windows = [];
     private readonly string[] _args;
     private TrayHost? _tray;
+    private bool _trayIconShown;
     private SettingsWindow? _settingsWindow;
     private bool _quitting;
+    private bool _clipboardAsked;
+    private WinVTakeover? _winV;
     private DispatcherQueueTimer? _indexTimer;
 
     public App(string[] args)
@@ -32,6 +37,7 @@ public partial class App : Application
 
     internal AppServices Services { get; private set; } = null!;
     internal SearchService Search { get; private set; } = null!;
+    internal ClipboardService ClipboardService { get; private set; } = null!;
     internal List<string> RecentCommands { get; } = [];
     internal MainWindow? LastActive { get; set; }
 
@@ -58,12 +64,14 @@ public partial class App : Application
         StartupLog.Mark("onLaunched");
         Dispatcher = DispatcherQueue.GetForCurrentThread();
         Services = new AppServices(Dispatcher);
+        ClipboardService = new ClipboardService(Services, Dispatcher);
+        ClipboardService.Changed += ExtraFeatures.RefreshClipboardStack;
         Drives.Start(Dispatcher);
         Theme.Apply(Services.Settings.Appearance.Theme, Services.Settings.Appearance.AccentColor);
         StartupLog.Configure(Services.Paths.LogsDirectory, Services.Settings.App.StartupLog);
         StartupLog.Mark("services");
 
-        var background = _args.Contains("--background") || _args.Contains("--notes") || _args.Contains("--downloads");
+        var background = _args.Contains("--background") || _args.Contains("--notes") || _args.Contains("--downloads") || _args.Contains("--clipboard");
         var target = TargetFromArgs(_args);
         if (!background || target is not null)
         {
@@ -71,7 +79,7 @@ public partial class App : Application
             w.Activate();
             StartupLog.Mark("windowActivated");
         }
-        else if (Services.Settings.App.Resident)
+        else if (Services.Settings.KeepsResident)
         {
             // Pre-create a hidden window so the first Win+E/tray open is instant.
             var w = OpenWindow(restore: true);
@@ -90,6 +98,7 @@ public partial class App : Application
             });
         }
         if (_args.Contains("--downloads")) Dispatcher.TryEnqueue(() => ShowDownloadsStack());
+        if (_args.Contains("--clipboard")) Dispatcher.TryEnqueue(() => ShowClipboardStack());
 
         // Everything below is not needed for the first frame.
         Dispatcher.TryEnqueue(DispatcherQueuePriority.Low, StartBackgroundServices);
@@ -116,43 +125,112 @@ public partial class App : Application
         var s = Services.Settings;
         if (MainWindow.IsElevated)
         {
-            // Admin Instance: no tray, no autostart, no hotkeys, no hooks.
+            // Admin Instance: no tray, no autostart, no hotkeys, no hooks, no clipboard capture.
+            ClipboardService.Apply(elevated: true);
             ExtraFeatures.ApplySettings(this);
             return;
         }
 
-        try { Autostart.Apply(s.App.Resident && s.App.StartWithWindows); }
+        try { Autostart.Apply(s.KeepsResident && s.App.StartWithWindows); }
         catch (UnauthorizedAccessException) { }
 
-        if (s.App.Resident && _tray is null)
+        // The message window always exists (it owns the global hotkeys); the tray icon only while Pollux stays resident.
+        // The Clipboard History keeps Pollux resident, with its tray icon (Pause lives in the tray menu).
+        if (_tray is null)
         {
             _tray = new TrayHost(Dispatcher, Path.Combine(AppContext.BaseDirectory, "Assets", "pollux.ico"));
-            _tray.ShowIcon(MainWindow.IsElevated ? "Pollux (Admin)" : "Pollux");
             _tray.OpenWindowRequested += () => OpenNewWindow();
             _tray.DownloadsRequested += () => ShowDownloadsStack();
             _tray.NotesRequested += () => ShowNotes();
             _tray.SettingsRequested += ShowSettings;
             _tray.UpdatesRequested += ShowUpdates;
+            _tray.ClipboardPauseRequested += () => ClipboardService.SetPaused(!Services.Settings.Clipboard.Paused);
             _tray.QuitRequested += Quit;
         }
-        else if (!s.App.Resident && _tray is not null)
+
+        if (s.KeepsResident && !_trayIconShown)
         {
-            _tray.Dispose();
-            _tray = null;
+            _tray.ShowIcon("Pollux");
+            _trayIconShown = true;
+        }
+        else if (!s.KeepsResident && _trayIconShown)
+        {
+            _tray.HideIcon();
+            _trayIconShown = false;
         }
 
-        if (_tray is not null)
+        _tray.UnregisterAllHotkeys();
+        if (s.KeepsResident)
         {
-            _tray.UnregisterAllHotkeys();
             TryHotkey(s.App.GlobalHotkey, () => OpenNewWindow());
             TryHotkey(s.Downloads.GlobalHotkey, () => ShowDownloadsStack());
             TryHotkey(s.Notes.GlobalHotkey, () => ShowNotes(newNote: true));
         }
 
-        if (s.App.TakeOverWinE) WinEHook.Enable(Dispatcher, () => OpenNewWindow());
-        else WinEHook.Disable();
+        // Also while not resident (Clipboard History off): the first press asks whether to turn it on.
+        TryHotkey(s.Clipboard.GlobalHotkey, () => ShowClipboardStack());
+
+        WinEHook.Apply(Dispatcher, s.App.TakeOverWinE ? () => OpenNewWindow() : null, s.Clipboard.TakeOverWinV ? () => ShowClipboardStack() : null);
+        ApplyWinVTakeover(s.Clipboard.TakeOverWinV);
+
+        ClipboardService.Apply(elevated: false);
+        WireClipboardCommands(s.Clipboard.Enabled);
+        if (_tray is not null)
+        {
+            _tray.ClipboardHistoryOn = s.Clipboard.Enabled;
+            _tray.ClipboardPaused = s.Clipboard.Paused;
+        }
 
         ExtraFeatures.ApplySettings(this);
+    }
+
+    /// <summary>Turns Windows' own Win+V clipboard history off while Pollux owns Win+V, and puts it back when the takeover ends.</summary>
+    private void ApplyWinVTakeover(bool takeOver)
+    {
+        try
+        {
+            _winV ??= new WinVTakeover(new WinVRegistry(), Path.Combine(ClipStore.DirectoryFor(Services.Paths), "winv-restore.json"));
+            if (takeOver) _winV.Engage();
+            else _winV.Restore();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            CrashLog.Write(ex);
+        }
+    }
+
+    /// <summary>
+    /// Opens the Clipboard Stack; while the Clipboard History is off, asks once per run whether to turn it on
+    /// (afterwards <paramref name="window"/>, when given, shows "Clipboard History is off").
+    /// Works before the background services started (--clipboard on a cold start). The Admin Instance has no Clipboard Stack.
+    /// </summary>
+    internal void ShowClipboardStack(MainWindow? window = null)
+    {
+        if (MainWindow.IsElevated)
+        {
+            window?.ShowToast("Clipboard History is off");
+            return;
+        }
+
+        if (Services.Settings.Clipboard.Enabled)
+        {
+            OpenClipboardStack();
+            return;
+        }
+
+        if (_clipboardAsked)
+        {
+            window?.ShowToast("Clipboard History is off");
+            return;
+        }
+
+        _clipboardAsked = true;
+        var answer = Native.MessageBoxW(0, "The Clipboard History is off. Turn it on to record what you copy?\n\nPollux then keeps running in the background.", "Pollux", Native.MB_YESNO | Native.MB_ICONQUESTION | Native.MB_SETFOREGROUND | Native.MB_TOPMOST);
+        if (answer != Native.IDYES) return;
+        Services.Settings.Clipboard.Enabled = true;
+        Services.SaveSettings();
+        // Finish what the hotkey or --clipboard asked for.
+        OpenClipboardStack();
     }
 
     private void TryHotkey(string chord, Action action)
@@ -176,6 +254,7 @@ public partial class App : Application
             if (args.Contains("--quit")) { Quit(); return; }
             if (args.Contains("--background")) return;
             if (args.Contains("--downloads")) { ShowDownloadsStack(); return; }
+            if (args.Contains("--clipboard")) { ShowClipboardStack(); return; }
             if (args.Contains("--notes")) { ShowNotes(newNote: true); return; }
             if (ValueAfter(args, "--workspace") is { } workspace)
             {
@@ -251,7 +330,13 @@ public partial class App : Application
         w.Closed += (_, _) =>
         {
             _windows.Remove(w);
-            if (_windows.Count == 0 && (!Services.Settings.App.Resident || MainWindow.IsElevated)) Exit();
+            if (_windows.Count == 0 && (!Services.Settings.KeepsResident || MainWindow.IsElevated) && !_quitting)
+            {
+                // Not resident: the last window ends the process. Undo hooks and the Win+V takeover like Quit does.
+                _quitting = true;
+                StopServices();
+                Exit();
+            }
         };
         return w;
     }
@@ -280,7 +365,7 @@ public partial class App : Application
     }
 
     /// <summary>The Admin Instance never stays resident: it exists only while its windows are open.</summary>
-    internal bool KeepResident(MainWindow w) => !_quitting && Services.Settings.App.Resident && !MainWindow.IsElevated;
+    internal bool KeepResident(MainWindow w) => !_quitting && Services.Settings.KeepsResident && !MainWindow.IsElevated;
 
     internal void OnWindowClosing(MainWindow w)
     {
@@ -298,13 +383,23 @@ public partial class App : Application
         if (Services.Session.Windows.Count == 0 && _windows.Count > 0) Services.Session.Windows = [_windows[0].ToSession()];
         Services.SaveSession();
         Services.SavePlaces();
-        WinEHook.Disable();
-        _tray?.Dispose();
-        Search?.Dispose();
+        StopServices();
         foreach (var w in _windows.ToList()) w.Close();
         _settingsWindow?.Close();
         ExtraFeatures.Shutdown();
         Exit();
+    }
+
+    /// <summary>Hooks, Win+V takeover, clipboard capture and tray: everything that must not outlive the process.</summary>
+    private void StopServices()
+    {
+        WinEHook.Disable();
+        ClipboardService.Shutdown();
+        // Only the main instance engages the Win+V takeover; the Admin Instance must not undo it.
+        if (!MainWindow.IsElevated) ApplyWinVTakeover(false);
+        _tray?.Dispose();
+        _tray = null;
+        Search?.Dispose();
     }
 
     internal void ShowSettings()
@@ -323,6 +418,15 @@ public partial class App : Application
     internal void ShowNotes(bool newNote = false) => ExtraFeatures.ShowNotes(this, newNote);
 
     internal void ShowUpdates() => ExtraFeatures.ShowUpdates(this);
+
+    /// <summary>Palette commands of the Clipboard History work only while it is on (otherwise they toast "Clipboard History is off").</summary>
+    private void WireClipboardCommands(bool on)
+    {
+        ClipboardCommands.ClearHistory = on ? ClipboardService.ClearHistory : null;
+        ClipboardCommands.SetPaused = on ? ClipboardService.SetPaused : null;
+    }
+
+    private void OpenClipboardStack() => ExtraFeatures.ShowClipboardStack(this, ClipboardService.History, ClipboardService.ReadImage, ClipboardService.SaveSoon);
 
     internal void NoteCommand(string id)
     {

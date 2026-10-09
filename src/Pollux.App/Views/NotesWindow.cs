@@ -55,7 +55,7 @@ internal sealed partial class NotesWindow : Window
         AppWindow.Closing += (_, e) =>
         {
             SavePending();
-            if (!_app.Services.Settings.App.Resident) return;
+            if (!_app.Services.Settings.KeepsResident) return;
             e.Cancel = true;
             AppWindow.Hide();
         };

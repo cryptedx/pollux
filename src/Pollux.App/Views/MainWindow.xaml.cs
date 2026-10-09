@@ -1305,13 +1305,81 @@ internal sealed partial class MainWindow : Window, IPaneHost
     {
         if (Active.Folder is not { } target) return;
         var content = Clipboard.GetContent();
-        if (!content.Contains(StandardDataFormats.StorageItems)) return;
-        var items = await content.GetStorageItemsAsync();
-        var paths = items.Select(i => i.Path).Where(x => !string.IsNullOrEmpty(x)).ToList();
-        if (paths.Count == 0) return;
+        var paths = new List<string>();
+        if (content.Contains(StandardDataFormats.StorageItems))
+        {
+            var items = await content.GetStorageItemsAsync();
+            paths = items.Select(i => i.Path).Where(x => !string.IsNullOrEmpty(x)).ToList();
+        }
+
+        if (paths.Count == 0)
+        {
+            if (Services.Settings.Clipboard.PasteAsFile) await PasteClipAsFileAsync(content, target);
+            return;
+        }
+
         var move = content.RequestedOperation.HasFlag(DataPackageOperation.Move);
         Transfer(move, paths, target);
         if (move) Clipboard.Clear();
+    }
+
+    /// <summary>Ctrl+V with text or an image (and no files) on the clipboard: creates a .txt or .png in the folder.</summary>
+    private async Task PasteClipAsFileAsync(DataPackageView content, string target)
+    {
+        try
+        {
+            string name;
+            if (content.Contains(StandardDataFormats.Text))
+            {
+                var text = await content.GetTextAsync();
+                if (string.IsNullOrWhiteSpace(text)) return;
+                var now = DateTime.Now;
+                name = await CreateNewFileAsync(target, exists => Pollux.Core.Clipboard.ClipFileName.ForText(text, now, exists), System.Text.Encoding.UTF8.GetBytes(text));
+            }
+            else if (content.Contains(StandardDataFormats.Bitmap))
+            {
+                var png = await ClipboardImage.ToPngAsync(content);
+                var now = DateTime.Now;
+                name = await CreateNewFileAsync(target, exists => Pollux.Core.Clipboard.ClipFileName.ForImage(now, exists), png);
+            }
+            else
+            {
+                return;
+            }
+
+            Active.SelectByName(name);
+            ShowToast("Created " + name);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            ShowToast(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Writes <paramref name="bytes"/> to a new file named by <paramref name="pickName"/> (given an "exists" check) and returns
+    /// the name. Never overwrites: the file is created with <see cref="FileMode.CreateNew"/>, and when another process created
+    /// that name in the meantime, the next keep-both name is tried.
+    /// </summary>
+    private static async Task<string> CreateNewFileAsync(string target, Func<Func<string, bool>, string> pickName, byte[] bytes)
+    {
+        var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool Exists(string n) => taken.Contains(n) || File.Exists(Path.Combine(target, n)) || Directory.Exists(Path.Combine(target, n));
+        for (var attempt = 0; ; attempt++)
+        {
+            var name = pickName(Exists);
+            var path = Path.Combine(target, name);
+            try
+            {
+                await using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, useAsync: true);
+                await stream.WriteAsync(bytes);
+                return name;
+            }
+            catch (IOException) when (attempt < 10 && (File.Exists(path) || Directory.Exists(path)))
+            {
+                taken.Add(name);
+            }
+        }
     }
 
     private async Task RenameAsync()

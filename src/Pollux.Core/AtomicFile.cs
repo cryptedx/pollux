@@ -9,4 +9,11 @@ public static class AtomicFile
         File.WriteAllText(temp, contents);
         File.Move(temp, path, overwrite: true);
     }
+
+    public static void WriteAllBytes(string path, byte[] contents)
+    {
+        var temp = path + ".tmp";
+        File.WriteAllBytes(temp, contents);
+        File.Move(temp, path, overwrite: true);
+    }
 }

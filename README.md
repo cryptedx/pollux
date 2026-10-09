@@ -24,6 +24,7 @@ It is made for developers who work in VS Code and with agentic coding tools.
 | **Quick Look** | `Space` previews the selection: images, code with syntax highlighting (Monaco), PDFs, a hex view for binaries, and a summary for folders |
 | **Notes** | Plain Markdown files edited with Monaco, so VS Code keys work, including multi-cursor. Notes are saved automatically and named after their first line. Tags come from `#tags` or front matter. `Win+Alt+N` creates a new note from anywhere |
 | **Downloads Stack** | Left-click the tray icon or press `Win+Alt+D` to see your newest downloads, like a macOS Dock stack. You can drag files out of it |
+| **Clipboard History** | Optional, off by default (Settings › Clipboard). Pollux records the text, images and file lists you copy, so older copies stay one keystroke away. `Win+Alt+V` opens the **Clipboard Stack** from anywhere: type to search by substring or word initials, substring matches first (`@code` narrows to Clips copied from VS Code), `Enter` pastes into the previous window, `Shift+Enter` only puts the Clip on the clipboard. **Kept Clips** stay at the top and never rotate out. Optionally `Win+V` opens it instead of Windows' own clipboard history. Copies the source app marks as private (as most password managers do) and copies from processes on your exclusion list are not recorded; there is no other password-manager detection |
 | **Workspaces** | Save a window's panes, tabs, Workspace Bookmarks and terminal folder, then switch with `Ctrl+Alt+W` or `pollux --workspace NAME` |
 | **Inbox** | Treat the Desktop as an Inbox: hide its icons, then sort it into `Documents\Inbox\<category>` (with a preview first) |
 | **App updates** | A `winget upgrade` list where you pick which updates to install, either normally or as admin. Automatic checks are opt-in |
@@ -41,7 +42,7 @@ It is made for developers who work in VS Code and with agentic coding tools.
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Pollux is copied to `%LocalAppData%\Programs\Pollux` and gets a Start menu shortcut. To remove it, run `uninstall.ps1` from that folder (add `-RemoveData` to also delete settings and state; notes are kept).
+Pollux is copied to `%LocalAppData%\Programs\Pollux` and gets a Start menu shortcut. To remove it, run `uninstall.ps1` from that folder (add `-RemoveData` to also delete settings, state and the Clipboard History; notes are kept). If you turned on the `Win+V` takeover, `uninstall.ps1` also restores Windows' clipboard history setting to what it was before, even if Pollux was force-closed.
 
 ## Configuration
 
@@ -53,6 +54,7 @@ Everything Pollux uses lives in a few readable files:
 | `%AppData%\Pollux\keybindings.json` | `{ "key": "ctrl+n", "command": "tab.new" }`; a `-command` entry removes a default |
 | `%AppData%\Pollux\bookmarks.json`, `workspaces\*.json` | Bookmarks and Workspaces |
 | `%LocalAppData%\Pollux\` | Recent, session, the WebView2 profile and logs (`startup.log` has the startup timings, `errors.log` has exceptions) |
+| `%LocalAppData%\Pollux\clipboard\` | Clipboard History: `history.dat` and `images\`. Encrypted with DPAPI for your Windows user, so only your account on this PC can read them. Never synced, never sent anywhere. Clear History (command palette) removes everything except Kept Clips |
 | `Documents\Pollux\Notes\` | Your notes as `.md` files (the folder is configurable) |
 
 ## Command line
@@ -62,6 +64,7 @@ Pollux.exe [folder|file]           open a window at a folder, or with the file s
 Pollux.exe --workspace "Name"      open a Workspace
 Pollux.exe --command id[,id…]      run commands in the frontmost window (e.g. view.toggleDual)
 Pollux.exe --notes | --downloads   open a new note / the Downloads Stack
+Pollux.exe --clipboard             open the Clipboard Stack
 Pollux.exe --background            start in the tray only (used for autostart)
 Pollux.exe --quit                  stop the background process
 ```
