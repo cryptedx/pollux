@@ -106,8 +106,8 @@
                         <TextBlock x:Name="TransfersText" FontFamily="{StaticResource PolluxMono}" FontSize="11" VerticalAlignment="Center" />
                     </StackPanel>
                     <FlyoutBase.AttachedFlyout>
-                        <Flyout x:Name="TransfersFlyout" Placement="Top">
-                            <StackPanel x:Name="TransfersPanel" Spacing="6" Width="460" />
+                        <Flyout x:Name="TransfersFlyout" Placement="TopEdgeAlignedRight">
+                            <StackPanel x:Name="TransfersPanel" Spacing="6" Width="400" />
                         </Flyout>
                     </FlyoutBase.AttachedFlyout>
                 </Border>

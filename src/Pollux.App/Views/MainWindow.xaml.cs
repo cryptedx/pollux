@@ -657,6 +657,9 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "file.copyName": CopyText(string.Join(Environment.NewLine, TargetPaths().Select(Path.GetFileName))); break;
             case "file.selectAll": p.SelectAll(); break;
             case "file.shellMenu": ShowShellMenu(); break;
+            case "transfers.pauseAll": foreach (var j in _app.Transfers.Jobs.Where(j => !j.IsFinished)) j.Pause(); UpdateTransfersUi(); break;
+            case "transfers.resumeAll": foreach (var j in _app.Transfers.Jobs.Where(j => !j.IsFinished)) j.Resume(); UpdateTransfersUi(); break;
+            case "transfers.cancelAll": foreach (var j in _app.Transfers.Jobs.Where(j => !j.IsFinished)) j.Cancel(); break;
             case "transfers.show": TransfersBadge.Visibility = Visibility.Visible; RenderTransfersPanel(); FlyoutBase.ShowAttachedFlyout(TransfersBadge); break;
             case "file.showInExplorer": Shell.RevealInExplorer(p.SelectedPaths.FirstOrDefault() ?? p.Folder ?? ""); break;
             case "bookmark.add": AddBookmark(p.Folder); break;
@@ -947,7 +950,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
             TransfersText.Text = "⚠ problems";
         }
 
-        if (TransfersFlyout.IsOpen) RenderTransfersPanel();
+        if (TransfersFlyout.IsOpen) RefreshTransfersPanel();
     }
 
     private void TransfersBadge_Tapped(object sender, TappedRoutedEventArgs e)
@@ -956,45 +959,96 @@ internal sealed partial class MainWindow : Window, IPaneHost
         FlyoutBase.ShowAttachedFlyout(TransfersBadge);
     }
 
+    private sealed class TransferRow
+    {
+        public required ProgressBar Bar { get; init; }
+        public required TextBlock Status { get; init; }
+        public required TextBlock Current { get; init; }
+        public Button? Pause { get; init; }
+        public Core.Operations.TransferState State { get; init; }
+        public int Errors { get; init; }
+    }
+
+    private readonly Dictionary<int, TransferRow> _transferRows = [];
+
+    /// <summary>
+    /// Updates the open panel in place. Rebuilding it on every progress tick replaced the buttons under the mouse,
+    /// so a click (press + release) never reached them.
+    /// </summary>
+    private void RefreshTransfersPanel()
+    {
+        var jobs = VisibleTransferJobs();
+        if (jobs.Count != _transferRows.Count || jobs.Any(j => !_transferRows.TryGetValue(j.Id, out var r) || r.State != j.State || r.Errors != j.Errors.Count))
+        {
+            RenderTransfersPanel();
+            return;
+        }
+
+        foreach (var job in jobs) FillRow(_transferRows[job.Id], job);
+    }
+
+    private List<Core.Operations.TransferJob> VisibleTransferJobs() => _app.Transfers.Jobs.AsEnumerable().Reverse().Take(8).ToList();
+
+    private static void FillRow(TransferRow row, Core.Operations.TransferJob job)
+    {
+        var p = job.Progress;
+        row.Bar.Value = job.State == Core.Operations.TransferState.Completed ? 1 : p.Fraction;
+        row.Status.Text = job.State switch
+        {
+            Core.Operations.TransferState.Completed => $"done · {p.TotalFiles} files · {Format.Size(p.TotalBytes)}",
+            Core.Operations.TransferState.Failed => "failed: " + job.Error,
+            Core.Operations.TransferState.Cancelled => "cancelled",
+            Core.Operations.TransferState.Queued => "waiting",
+            Core.Operations.TransferState.Paused => $"paused · {Format.Size(p.DoneBytes)} of {Format.Size(p.TotalBytes)}",
+            _ => $"{p.DoneFiles}/{p.TotalFiles} files · {Format.Size(p.DoneBytes)} of {Format.Size(p.TotalBytes)} · {Format.Size((long)p.BytesPerSecond)}/s",
+        };
+        row.Current.Text = job.IsFinished ? "" : p.CurrentFile;
+        row.Current.Visibility = row.Current.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private void RenderTransfersPanel()
     {
         TransfersPanel.Children.Clear();
-        foreach (var job in _app.Transfers.Jobs.AsEnumerable().Reverse().Take(8))
+        _transferRows.Clear();
+        foreach (var job in VisibleTransferJobs())
         {
-            var p = job.Progress;
             var box = new StackPanel { Spacing = 3 };
-            var head = new Grid();
+            var head = new Grid { ColumnSpacing = 8 };
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            head.Children.Add(new TextBlock { Text = job.Title, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis });
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+            head.Children.Add(new TextBlock { Text = job.Title, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center });
+            Button? pause = null;
             if (!job.IsFinished)
             {
-                var pause = new Button { Content = job.State == Core.Operations.TransferState.Paused ? "Resume" : "Pause", FontSize = 11, Padding = new Thickness(8, 2, 8, 2) };
-                pause.Click += (_, _) => { if (job.State == Core.Operations.TransferState.Paused) job.Resume(); else job.Pause(); RenderTransfersPanel(); };
+                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+                pause = new Button { Content = job.State == Core.Operations.TransferState.Paused ? "Resume" : "Pause", FontSize = 11, Padding = new Thickness(8, 2, 8, 2) };
+                pause.Click += (_, _) =>
+                {
+                    if (job.State == Core.Operations.TransferState.Paused) job.Resume();
+                    else job.Pause();
+                    RenderTransfersPanel();
+                };
                 var cancel = new Button { Content = "Cancel", FontSize = 11, Padding = new Thickness(8, 2, 8, 2) };
                 cancel.Click += (_, _) => job.Cancel();
                 buttons.Children.Add(pause);
                 buttons.Children.Add(cancel);
+                Grid.SetColumn(buttons, 1);
+                head.Children.Add(buttons);
             }
 
-            Grid.SetColumn(buttons, 1);
-            head.Children.Add(buttons);
             box.Children.Add(head);
-            box.Children.Add(new ProgressBar { Maximum = 1, Value = job.State == Core.Operations.TransferState.Completed ? 1 : p.Fraction, ShowPaused = job.State == Core.Operations.TransferState.Paused, ShowError = job.State == Core.Operations.TransferState.Failed });
-            var status = job.State switch
-            {
-                Core.Operations.TransferState.Completed => $"done · {p.TotalFiles} files · {Format.Size(p.TotalBytes)}",
-                Core.Operations.TransferState.Failed => "failed: " + job.Error,
-                Core.Operations.TransferState.Cancelled => "cancelled",
-                Core.Operations.TransferState.Queued => "waiting",
-                _ => $"{p.DoneFiles}/{p.TotalFiles} files · {Format.Size(p.DoneBytes)} of {Format.Size(p.TotalBytes)} · {Format.Size((long)p.BytesPerSecond)}/s",
-            };
-            box.Children.Add(new TextBlock { Text = status, FontFamily = Mono, FontSize = 11, Foreground = Theme.Brush("PolluxMutedBrush"), TextTrimming = TextTrimming.CharacterEllipsis });
-            if (!job.IsFinished && p.CurrentFile.Length > 0)
-                box.Children.Add(new TextBlock { Text = p.CurrentFile, FontFamily = Mono, FontSize = 10.5, Foreground = Theme.Brush("PolluxMutedBrush"), TextTrimming = TextTrimming.CharacterEllipsis });
-            foreach (var err in job.Errors.Take(5))
+            var bar = new ProgressBar { Maximum = 1, ShowPaused = job.State == Core.Operations.TransferState.Paused, ShowError = job.State == Core.Operations.TransferState.Failed };
+            var status = new TextBlock { FontFamily = Mono, FontSize = 11, Foreground = Theme.Brush("PolluxMutedBrush"), TextTrimming = TextTrimming.CharacterEllipsis };
+            var current = new TextBlock { FontFamily = Mono, FontSize = 10.5, Foreground = Theme.Brush("PolluxMutedBrush"), TextTrimming = TextTrimming.CharacterEllipsis };
+            box.Children.Add(bar);
+            box.Children.Add(status);
+            box.Children.Add(current);
+            var errors = job.Errors;
+            foreach (var err in errors.Take(5))
                 box.Children.Add(new TextBlock { Text = "⚠ " + err, FontFamily = Mono, FontSize = 10.5, Foreground = Theme.Brush("PolluxBadBrush"), TextWrapping = TextWrapping.Wrap });
+            var row = new TransferRow { Bar = bar, Status = status, Current = current, Pause = pause, State = job.State, Errors = errors.Count };
+            FillRow(row, job);
+            _transferRows[job.Id] = row;
             TransfersPanel.Children.Add(box);
         }
 

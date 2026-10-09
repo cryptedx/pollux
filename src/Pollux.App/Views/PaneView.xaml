@@ -19,7 +19,8 @@
             </Grid.RowDefinitions>
 
             <!-- Tabs -->
-            <Grid Background="{ThemeResource PolluxSurface2Brush}" BorderBrush="{ThemeResource PolluxLineBrush}" BorderThickness="0,0,0,1" Padding="6,6,6,0">
+            <Grid x:Name="TabBar" Background="{ThemeResource PolluxSurface2Brush}" BorderBrush="{ThemeResource PolluxLineBrush}" BorderThickness="0,0,0,1" Padding="6,6,6,0"
+                  AllowDrop="True" DragOver="TabBar_DragOver" Drop="TabBar_Drop">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -121,7 +122,7 @@
                             </DataTemplate>
                         </ListView.ItemTemplate>
                     </ListView>
-                    <TextBlock x:Name="EmptyText" Grid.Row="1" Visibility="Collapsed" Margin="20" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="EmptyText" Grid.Row="1" Visibility="Collapsed" IsHitTestVisible="False" Margin="20" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" TextWrapping="Wrap" />
                 </Grid>
                 <ScrollViewer x:Name="HomeHost" Visibility="Collapsed" Padding="18,12">
                     <StackPanel x:Name="HomePanel" Spacing="6" />

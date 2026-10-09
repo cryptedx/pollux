@@ -159,10 +159,23 @@ public static class TransferRunner
             return target;
         }
 
+        private double _sampleTime;
+        private long _sampleBytes;
+        private double _speed;
+
+        /// <summary>Speed is measured over the last ~0.5 s, so pauses and slow starts do not distort it.</summary>
         public void Report(string current)
         {
-            var seconds = Math.Max(0.001, _clock.Elapsed.TotalSeconds);
-            Job.Report(new TransferProgress(totalBytes, DoneBytes, totalFiles, DoneFiles, current, DoneBytes / seconds));
+            var now = _clock.Elapsed.TotalSeconds;
+            var dt = now - _sampleTime;
+            if (dt >= 0.5)
+            {
+                if (dt < 3) _speed = (DoneBytes - _sampleBytes) / dt; // longer gaps are pauses or prompts: just restart sampling
+                _sampleTime = now;
+                _sampleBytes = DoneBytes;
+            }
+
+            Job.Report(new TransferProgress(totalBytes, DoneBytes, totalFiles, DoneFiles, current, _speed));
         }
     }
 

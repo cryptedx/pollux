@@ -156,10 +156,11 @@ public sealed partial class PaneView : UserControl
     internal void ReorderTab(int from, int to)
     {
         if (from == to || from < 0 || from >= _tabs.Count) return;
+        var activeTab = _tabs[_active]; // the shown tab stays active, wherever it ends up
         var t = _tabs[from];
         _tabs.RemoveAt(from);
         _tabs.Insert(Math.Clamp(to, 0, _tabs.Count), t);
-        _active = _tabs.IndexOf(t);
+        _active = _tabs.IndexOf(activeTab);
         RenderTabs();
     }
 
@@ -252,24 +253,41 @@ public sealed partial class PaneView : UserControl
             };
             tab.Drop += (_, e) =>
             {
+                e.Handled = true; // the tab bar behind must not also handle it
                 if (_draggedTab is not { } from) return;
                 _draggedTab = null;
                 if (from.Source._host != _host) return; // tabs move only within one window
                 _host.MoveTab(from.Source.Index, from.Tab, Index, index);
             };
             tab.DropCompleted += (_, _) => _draggedTab = null;
-            tab.PointerPressed += (_, e) =>
+            // Activate on Tapped (not PointerPressed): rebuilding the strip on press would remove the tab being dragged.
+            tab.Tapped += (_, _) =>
             {
-                var props = e.GetCurrentPoint(tab).Properties;
-                if (props.IsMiddleButtonPressed) CloseTab(index);
-                else
-                {
-                    _host.OnPaneActivated(this);
-                    SwitchTo(index);
-                }
+                _host.OnPaneActivated(this);
+                SwitchTo(index);
+            };
+            tab.PointerReleased += (_, e) =>
+            {
+                if (e.GetCurrentPoint(tab).Properties.PointerUpdateKind == Microsoft.UI.Input.PointerUpdateKind.MiddleButtonReleased) CloseTab(index);
             };
             TabStrip.Children.Add(tab);
         }
+    }
+
+    /// <summary>Dropping a tab on the free part of the tab bar moves it to the end of this Pane.</summary>
+    private void TabBar_DragOver(object sender, DragEventArgs e)
+    {
+        if (_draggedTab is not { } d || d.Source._host != _host) return;
+        e.AcceptedOperation = DataPackageOperation.Move;
+        e.DragUIOverride.IsCaptionVisible = false;
+        e.DragUIOverride.IsGlyphVisible = false;
+    }
+
+    private void TabBar_Drop(object sender, DragEventArgs e)
+    {
+        if (_draggedTab is not { } from || from.Source._host != _host) return;
+        _draggedTab = null;
+        _host.MoveTab(from.Source.Index, from.Tab, Index, from.Source == this ? _tabs.Count - 1 : _tabs.Count);
     }
 
     private void NewTab_Click(object sender, RoutedEventArgs e)
@@ -419,6 +437,7 @@ public sealed partial class PaneView : UserControl
         var items = new List<FileItem>(_entries.Count);
         foreach (var e in _entries.Order(comparer))
         {
+            if (e.Name.EndsWith(".pollux-part", StringComparison.OrdinalIgnoreCase)) continue; // in-flight transfer
             if (!s.ShowHidden && e.IsHidden) continue;
             if (!s.ShowSystem && e.IsSystem && e.IsHidden) continue;
             var m = FilterMatcher.Match(e.Name, query, Settings.Filter.MatchInitials);
@@ -828,6 +847,7 @@ public sealed partial class PaneView : UserControl
     private void List_DragItemsStarting(object sender, DragItemsStartingEventArgs e)
     {
         var paths = e.Items.OfType<FileItem>().Select(i => i.Path).ToList();
+        CrashLog.Trace($"drag start pane {Index}: {paths.Count} items");
         if (paths.Count == 0) { e.Cancel = true; return; }
         e.Data.RequestedOperation = DataPackageOperation.Copy | DataPackageOperation.Move;
         e.Data.Properties.Add("PolluxSourceFolder", Folder ?? "");
@@ -859,6 +879,7 @@ public sealed partial class PaneView : UserControl
 
     private void List_DragOver(object sender, DragEventArgs e)
     {
+        CrashLog.Trace($"drag over pane {Index}: storage={e.DataView.Contains(StandardDataFormats.StorageItems)}");
         if (Folder is null || !e.DataView.Contains(StandardDataFormats.StorageItems)) return;
         var sameFolder = e.DataView.Properties.TryGetValue("PolluxSourceFolder", out var src) && string.Equals(src as string, Folder, StringComparison.OrdinalIgnoreCase);
         if (sameFolder) { e.AcceptedOperation = DataPackageOperation.None; return; }
@@ -869,6 +890,7 @@ public sealed partial class PaneView : UserControl
 
     private async void List_Drop(object sender, DragEventArgs e)
     {
+        CrashLog.Trace($"drop pane {Index}: op={e.AcceptedOperation}");
         if (Folder is null || !e.DataView.Contains(StandardDataFormats.StorageItems)) return;
         var deferral = e.GetDeferral();
         try
