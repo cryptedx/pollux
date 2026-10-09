@@ -41,6 +41,18 @@ public sealed partial class PaneView : UserControl
     public PaneView()
     {
         InitializeComponent();
+        // Mouse back/forward buttons, like Explorer. handledEventsToo: the ListView swallows presses on items.
+        AddHandler(PointerPressedEvent, new PointerEventHandler(OnXButtonPressed), handledEventsToo: true);
+    }
+
+    private void OnXButtonPressed(object sender, PointerRoutedEventArgs e)
+    {
+        var props = e.GetCurrentPoint(this).Properties;
+        if (props.IsXButton1Pressed) Back();
+        else if (props.IsXButton2Pressed) Forward();
+        else return;
+        _host.OnPaneActivated(this);
+        e.Handled = true;
     }
 
     internal int Index { get; set; }
