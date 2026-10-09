@@ -268,8 +268,9 @@ public sealed partial class PaneView : UserControl
                 Padding = new Thickness(10, 4, 4, 5),
                 CornerRadius = new CornerRadius(6, 6, 0, 0),
                 Background = on ? Res("PolluxSurfaceBrush") : null,
-                BorderBrush = Res("PolluxAccentBrush"),
-                BorderThickness = new Thickness(0, 0, 0, on && _isActive ? 2 : 0),
+                BorderBrush = on && _isActive ? Res("PolluxAccentBrush") : null,
+                // Always reserve the 2px indicator so toggling the active pane doesn't shift the layout.
+                BorderThickness = new Thickness(0, 0, 0, 2),
                 Opacity = on ? 1 : 0.7,
             };
             ToolTipService.SetToolTip(tab, _tabs[i].IsHome ? "Home" : _tabs[i].Location);
