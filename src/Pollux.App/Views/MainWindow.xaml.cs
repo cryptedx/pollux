@@ -78,7 +78,13 @@ internal sealed partial class MainWindow : Window, IPaneHost
         _statsTimer = new DispatcherTimerLite(DispatcherQueue, TimeSpan.FromSeconds(Math.Max(1, Services.Settings.StatusBar.RefreshSeconds)), UpdateStats);
         Activated += (_, e) =>
         {
-            if (e.WindowActivationState == WindowActivationState.Deactivated) return;
+            if (e.WindowActivationState == WindowActivationState.Deactivated)
+            {
+                // Like VS Code: the palette is a transient prompt and closes when the window loses focus.
+                if (PaletteOverlay.Visibility == Visibility.Visible) HidePalette(refocus: false);
+                return;
+            }
+
             _statsTimer.Start();
             _app.LastActive = this;
         };
@@ -1416,11 +1422,11 @@ internal sealed partial class MainWindow : Window, IPaneHost
         PaletteBox.Focus(FocusState.Keyboard);
     }
 
-    private void HidePalette()
+    private void HidePalette(bool refocus = true)
     {
         _searchCts?.Cancel();
         PaletteOverlay.Visibility = Visibility.Collapsed;
-        Active.FocusList();
+        if (refocus) Active.FocusList();
     }
 
     private List<PaletteItem> CommandItems()
