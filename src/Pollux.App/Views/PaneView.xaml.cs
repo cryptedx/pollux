@@ -50,9 +50,34 @@ public sealed partial class PaneView : UserControl
         var props = e.GetCurrentPoint(this).Properties;
         if (props.IsXButton1Pressed) Back();
         else if (props.IsXButton2Pressed) Forward();
-        else return;
+        else
+        {
+            // Primary presses only (touch and pen report as left): right-click has List_RightTapped, and a queued
+            // FocusList would select the first row before a background context menu opens.
+            if (props.IsLeftButtonPressed) ActivateOnPress(e.OriginalSource as DependencyObject);
+            return;
+        }
         _host.OnPaneActivated(this);
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// Any press inside an inactive pane activates it — including empty list space, the header or the home view,
+    /// which never take focus themselves. Presses on rows, buttons or text boxes focus their own target, so only
+    /// the "dead" areas move keyboard focus to the list. The tab strip is left to its Tapped handler: rebuilding it
+    /// on press would remove the tab being dragged.
+    /// </summary>
+    private void ActivateOnPress(DependencyObject? source)
+    {
+        if (_isActive) return;
+        var focusList = true;
+        for (var d = source; d is not null && d != this; d = VisualTreeHelper.GetParent(d))
+        {
+            if (d == TabStrip) return;
+            if (d is ListViewItem or TextBox or Microsoft.UI.Xaml.Controls.Primitives.ButtonBase or Microsoft.UI.Xaml.Controls.Primitives.ScrollBar) focusList = false;
+        }
+        _host.OnPaneActivated(this);
+        if (focusList) FocusListSoon();
     }
 
     internal int Index { get; set; }
