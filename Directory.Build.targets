@@ -1,0 +1,7 @@
+<Project>
+  <!-- MSTest.TestAdapter pulls in Microsoft.Testing.Extensions.Telemetry, which sends test-run
+       telemetry to Microsoft. Unregister it so no test host phones home (ADR 0001 spirit). -->
+  <ItemGroup>
+    <TestingPlatformBuilderHook Remove="98058041-B5B6-4A75-9834-58E6DF796A22" />
+  </ItemGroup>
+</Project>
