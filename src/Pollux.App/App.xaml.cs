@@ -80,6 +80,15 @@ public partial class App : Application
 
         if (_args.Contains("--notes")) Dispatcher.TryEnqueue(() => ShowNotes(newNote: true));
         if (ValueAfter(_args, "--workspace") is { } ws) Dispatcher.TryEnqueue(() => _windows.FirstOrDefault()?.Execute("workspace.open:" + ws));
+        if (CommandsFromArgs(_args) is { Count: > 0 } startCommands)
+        {
+            // Same as for a running instance: commands go to the (first) window once it exists.
+            Dispatcher.TryEnqueue(() =>
+            {
+                var target = _windows.FirstOrDefault(w => !w.IsHidden) ?? OpenNewWindow();
+                foreach (var c in startCommands) target.Execute(c);
+            });
+        }
         if (_args.Contains("--downloads")) Dispatcher.TryEnqueue(() => ShowDownloadsStack());
 
         // Everything below is not needed for the first frame.
