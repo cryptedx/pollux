@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using Pollux.App.Interop;
+using Pollux.Core.Launch;
 using Pollux.Core.Settings;
 
 namespace Pollux.App.Services;
@@ -34,75 +35,110 @@ internal static unsafe class Shell
         }
     }
 
-    public static void OpenWith(string path) =>
-        Start("rundll32.exe", $"shell32.dll,OpenAs_RunDLL {path}");
+    public static void OpenWith(string path) => Launch(new LaunchIntent.OpenWith(path));
 
     public static void ShowProperties(nint hwnd, string path) =>
         Native.SHObjectProperties(hwnd, Native.SHOP_FILEPATH, path, null);
 
-    public static void RevealInExplorer(string path) =>
-        Start("explorer.exe", $"/select,\"{path}\"");
+    public static void RevealInExplorer(string path) => Launch(new LaunchIntent.RevealInExplorer(path));
 
-    public static void OpenTerminal(string folder, TerminalSettings settings)
-    {
-        var app = settings.App.ToLowerInvariant();
-        if (app == "wt" && TryStart("wt.exe", string.IsNullOrWhiteSpace(settings.WindowsTerminalProfile)
-                ? $"-d {Quote(folder)}"
-                : $"-p \"{settings.WindowsTerminalProfile}\" -d {Quote(folder)}", folder))
-        {
-            return;
-        }
+    /// <summary>
+    /// What tool plans depend on: a PATH lookup that never searches the current directory or Pollux's own folder,
+    /// the system directory (SECURITY.md S-02, S-08), and whether this is the Admin Instance, whose plans ignore the
+    /// command and terminal settings (S-09).
+    /// </summary>
+    public static LaunchContext LaunchContext { get; } = new(
+        name => PathLookup.Find(name, Environment.GetEnvironmentVariable("PATH"), Environment.GetEnvironmentVariable("PATHEXT"),
+            [AppContext.BaseDirectory, Environment.CurrentDirectory], File.Exists),
+        Environment.SystemDirectory,
+        Views.MainWindow.IsElevated,
+        [Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)]);
 
-        var shell = app is "pwsh" or "powershell" or "cmd" ? app : settings.FallbackShell;
-        OpenShell(folder, shell);
-    }
+    /// <summary>Opens a terminal in <paramref name="folder"/> as the terminal settings say; null, or a message to show.</summary>
+    public static string? OpenTerminal(string folder, TerminalSettings settings) =>
+        Launch(new LaunchIntent.OpenTerminal(folder, settings.App, settings.WindowsTerminalProfile, settings.FallbackShell));
 
     /// <summary>Runs the Copilot CLI login in a terminal window; false when there is no CLI to run.</summary>
     public static bool OpenCopilotLogin(Pollux.Copilot.CopilotCli cli)
     {
-        var line = Pollux.Copilot.Connection.CopilotSignIn.TerminalCommandLine(cli, File.Exists);
-        return line is not null && TryStart("cmd.exe", line);
+        var path = Pollux.Copilot.Connection.CopilotSignIn.CliPath(cli, File.Exists);
+        return path is not null && Launch(new LaunchIntent.CopilotLogin(path)) is null;
     }
 
-    public static void OpenShell(string folder, string shell)
-    {
-        if (shell == "pwsh" && TryStart("pwsh.exe", "-NoExit", folder)) return;
-        if (shell == "cmd" && TryStart("cmd.exe", "", folder)) return;
-        TryStart("powershell.exe", "-NoExit", folder);
-    }
+    /// <summary>Opens <paramref name="shell"/> ("pwsh", "powershell" or "cmd") in <paramref name="folder"/>; null, or a message to show.</summary>
+    public static string? OpenShell(string folder, string shell) =>
+        Launch(new LaunchIntent.OpenShell(folder, shell));
 
-    public static bool OpenInVsCode(string path, string command) =>
-        TryStart("cmd.exe", $"/c {command} {Quote(path)}", Path.GetDirectoryName(path) ?? path, hidden: true);
+    /// <summary>Opens a file or folder in VS Code; null, or a message naming what is missing.</summary>
+    public static string? OpenInVsCode(string path, string command) =>
+        Launch(new LaunchIntent.OpenInVsCode(path, command));
 
     /// <summary>The Copilot app's command line is configurable because it changes between releases; "{path}" is replaced.</summary>
-    public static bool OpenInCopilot(string path, string commandTemplate)
-    {
-        if (string.IsNullOrWhiteSpace(commandTemplate)) return false;
-        var cmd = commandTemplate.Contains("{path}", StringComparison.Ordinal)
-            ? commandTemplate.Replace("{path}", Quote(path), StringComparison.Ordinal)
-            : $"{commandTemplate} {Quote(path)}";
-        return TryStart("cmd.exe", $"/c start \"\" {cmd}", path, hidden: true);
-    }
+    public static string? OpenInCopilot(string path, string commandTemplate) =>
+        Launch(new LaunchIntent.OpenInCopilotApp(path, commandTemplate));
 
-    public static bool TryStart(string file, string args, string workingDirectory = "", bool hidden = false)
+    /// <summary>The embedded terminal's shell in this process's environment; there always is one.</summary>
+    public static LaunchPlan.Run PlanEmbeddedTerminal(string folder, string shell) =>
+        LaunchPlanner.PlanEmbeddedTerminal(new LaunchIntent.EmbeddedTerminal(folder, shell), LaunchContext);
+
+    /// <summary>The launch plan for <paramref name="intent"/> in this process's environment.</summary>
+    public static LaunchPlan Plan(LaunchIntent intent) => LaunchPlanner.Plan(intent, LaunchContext);
+
+    /// <summary>Plans and executes <paramref name="intent"/>; null when the tool started, else a message naming the tool.</summary>
+    public static string? Launch(LaunchIntent intent) => Execute(LaunchPlanner.Plan(intent, LaunchContext));
+
+    /// <summary>Executes a launch plan; which program runs, with what, and where is decided by the plan alone.</summary>
+    public static string? Execute(LaunchPlan plan)
     {
+        if (plan is not LaunchPlan.Run run) return ((LaunchPlan.Missing)plan).Message;
         try
         {
-            Process.Start(new ProcessStartInfo(file, args)
+            Process.Start(new ProcessStartInfo(run.Executable, run.Arguments)
             {
-                UseShellExecute = !hidden,
-                CreateNoWindow = hidden,
-                WorkingDirectory = workingDirectory,
-            });
-            return true;
+                UseShellExecute = !run.Hidden,
+                CreateNoWindow = run.Hidden,
+                WorkingDirectory = run.WorkingDirectory,
+                Verb = run.Elevated ? "runas" : "",
+            })?.Dispose();
+            return null;
         }
-        catch (Win32Exception)
+        catch (Win32Exception ex) when (run.Elevated && ex.NativeErrorCode == 1223)
         {
-            return false;
+            return "elevation cancelled";
+        }
+        catch (Win32Exception ex)
+        {
+            return $"Could not start {run.Tool} ({run.Executable}): {ex.Message}";
         }
     }
 
-    private static void Start(string file, string args) => TryStart(file, args);
+    /// <summary>
+    /// Starts a helper whose output Pollux reads (git, winget, mklink): the plan's executable and folder, no shell, no
+    /// window, standard output (and with <paramref name="redirectStdErr"/> standard error) redirected, decoded as
+    /// <paramref name="encoding"/> (null: the console's code page). Null, with <paramref name="missing"/> saying why,
+    /// when the plan has no tool or the process did not start; a Win32Exception from the start itself propagates.
+    /// </summary>
+    public static Process? StartHelper(LaunchIntent intent, bool redirectStdErr, Encoding? encoding, out string? missing,
+        IReadOnlyDictionary<string, string>? environment = null)
+    {
+        var plan = Plan(intent);
+        if (plan is not LaunchPlan.Run run)
+        {
+            missing = (plan as LaunchPlan.Missing)?.Message;
+            return null;
+        }
+
+        var psi = new ProcessStartInfo(run.Executable, run.Arguments)
+        {
+            UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = run.WorkingDirectory,
+            RedirectStandardOutput = true, RedirectStandardError = redirectStdErr,
+            StandardOutputEncoding = encoding, StandardErrorEncoding = redirectStdErr ? encoding : null,
+        };
+        foreach (var (name, value) in environment ?? new Dictionary<string, string>()) psi.Environment[name] = value;
+        var process = Process.Start(psi);
+        missing = process is null ? $"Could not start {run.Tool}" : null;
+        return process;
+    }
 
     // ---- file operations (SHFileOperation: native progress/conflict dialogs, recycle bin, undo in Explorer) ----
 
@@ -124,6 +160,18 @@ internal static unsafe class Shell
     public static bool Move(nint hwnd, IReadOnlyList<string> sources, string targetDirectory, bool renameOnCollision = false) =>
         Run(hwnd, Native.FO_MOVE, sources, targetDirectory, (ushort)(Native.FOF_ALLOWUNDO | Native.FOF_NOCONFIRMMKDIR
             | (renameOnCollision ? Native.FOF_RENAMEONCOLLISION : 0)));
+
+    /// <summary>
+    /// <see cref="Copy(nint, IReadOnlyList{string}, string, bool)"/> (renaming only within the same folder) that also reports
+    /// the entries the shell gave a new name (<paramref name="renamed"/>), so undo knows what the copy created.
+    /// </summary>
+    public static bool Copy(nint hwnd, IReadOnlyList<string> sources, string targetDirectory, out IReadOnlyList<(string OldPath, string NewPath)> renamed) =>
+        Run(hwnd, Native.FO_COPY, sources, targetDirectory, (ushort)(Native.FOF_ALLOWUNDO | Native.FOF_NOCONFIRMMKDIR | Native.FOF_WANTMAPPINGHANDLE
+            | RenameOnCollisionIfSameFolder(sources, targetDirectory)), out renamed);
+
+    /// <summary><see cref="Move(nint, IReadOnlyList{string}, string, bool)"/> that also reports the entries the shell gave a new name.</summary>
+    public static bool Move(nint hwnd, IReadOnlyList<string> sources, string targetDirectory, out IReadOnlyList<(string OldPath, string NewPath)> renamed) =>
+        Run(hwnd, Native.FO_MOVE, sources, targetDirectory, (ushort)(Native.FOF_ALLOWUNDO | Native.FOF_NOCONFIRMMKDIR | Native.FOF_WANTMAPPINGHANDLE), out renamed);
 
     public static bool Delete(nint hwnd, IReadOnlyList<string> paths, bool permanent, bool confirm)
     {

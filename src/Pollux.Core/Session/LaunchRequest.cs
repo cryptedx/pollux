@@ -24,6 +24,13 @@ public sealed record LaunchRequest
     /// <summary>True for flags that make a cold start run without showing a window (unless a target is given).</summary>
     public bool WantsNoWindow => Background || Notes || Downloads || Clipboard;
 
+    /// <summary>
+    /// The request as the elevated Admin Instance acts on it: without commands and workspaces, which any process running
+    /// as the non-elevated user could forward to steer it (ADR 0008, SECURITY.md S-09). Showing a folder, quitting and
+    /// the other flags stay.
+    /// </summary>
+    public LaunchRequest ForAdminInstance() => this with { Workspace = null, Commands = [] };
+
     public static LaunchRequest Parse(string[] args, Func<string, bool> dirExists, Func<string, bool> fileExists)
     {
         // A redirected command line starts with the program path.

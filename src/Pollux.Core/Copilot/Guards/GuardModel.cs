@@ -36,10 +36,19 @@ public sealed record ToolRequest(ToolKind Kind, string? Command, IReadOnlyList<s
     /// <summary>The request reads everything below its folders (a recursive search such as the CLI's grep and glob tools).</summary>
     public bool Recursive { get; init; }
 
+    /// <summary>
+    /// The request opens its location in a Pollux Pane (pollux_navigate): Pollux itself lists the folder, so a network
+    /// location asks (the listing would authenticate to the host, SECURITY.md S-06).
+    /// </summary>
+    public bool Navigates { get; init; }
+
     public static ToolRequest Shell(string command) => new(ToolKind.Shell, command, [], []);
     public static ToolRequest Read(params string[] paths) => new(ToolKind.Read, null, paths, []);
     public static ToolRequest Write(params string[] paths) => new(ToolKind.Write, null, paths, []);
     public static ToolRequest Url(params string[] urls) => new(ToolKind.Url, null, [], urls);
+    /// <summary>Opening <paramref name="location"/> (a folder path) in a Pollux Pane: a read of it.</summary>
+    public static ToolRequest Navigate(string location) => new(ToolKind.Read, null, [location], []) { Navigates = true };
+
     public static ToolRequest Other() => new(ToolKind.Other, null, [], []);
 }
 

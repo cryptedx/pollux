@@ -29,6 +29,7 @@ internal sealed class CopilotPanel : IDisposable
     private readonly ContextRegistry _chips = new();
     private readonly App _app;
     private CancellationTokenSource? _check;
+    private string? _activeFolder; // read by the Chat on SDK threads; Pane state may only be read on the UI thread
     private CoreWebView2? _core;
     private bool _disposed;
 
@@ -44,11 +45,12 @@ internal sealed class CopilotPanel : IDisposable
         _app = app;
         _close = close;
         _ui = DispatcherQueue.GetForCurrentThread();
+        _activeFolder = context().Active.Folder;
         _channel = new PanelChannel(m => _core?.PostWebMessageAsString(m));
         // Chat messages arrive on SDK threads; WebView2 must be called on the UI thread.
         _chat = new CopilotChat(app.CopilotChats, OpenChatAsync, DeleteChatAsync, Post, ct => _app.CopilotQuotaState.RefreshAsync(ct),
             defaultModes: () => ChatModes.Of(app.Services.Settings.Copilot),
-            activeFolder: () => _context().Active.Folder, // a new Chat works in the active Pane's folder
+            activeFolder: () => Volatile.Read(ref _activeFolder), // a new Chat works in the active Pane's folder
             guardRules: () => app.Services.Settings.Copilot.GuardRules,
             actionLogs: app.CopilotActionLogs);
         host.Child = _web;
@@ -60,9 +62,9 @@ internal sealed class CopilotPanel : IDisposable
 
     private async Task InitializeAsync()
     {
-        _core = await WebHost.InitializeAsync(_web, "copilot.html");
+        _core = await WebHost.InitializeAsync(_web, "copilot.html", Pollux.Core.Files.WebViewKind.CopilotPanel);
         if (_disposed) return;
-        _core.WebMessageReceived += (_, e) => OnMessage(e.TryGetWebMessageAsString(), e);
+        _core.WebMessageReceived += (_, e) => OnMessage(WebHost.OwnMessageText(e, Pollux.Core.Files.WebViewKind.CopilotPanel), e);
         // Queued until the page reports "ready".
         SetTheme();
         _chat.PublishHeader();
@@ -155,7 +157,9 @@ internal sealed class CopilotPanel : IDisposable
     public void RefreshContext()
     {
         if (_disposed) return;
-        var chips = ContextChips.Defaults(_context());
+        var context = _context();
+        Volatile.Write(ref _activeFolder, context.Active.Folder);
+        var chips = ContextChips.Defaults(context);
         _chips.Issue(chips);
         _channel.Send(PanelMessages.Context(chips));
         _chat.PublishHeader(); // a Chat not started yet follows the active Pane's folder
@@ -166,7 +170,7 @@ internal sealed class CopilotPanel : IDisposable
     {
         if (_disposed) return;
         _chips.Issue(chips);
-        _ = Task.Run(() => _chat.StartNewAsync(prompt, chips, CancellationToken.None));
+        _ = RunAsync(() => _chat.StartNewAsync(prompt, chips, CancellationToken.None));
     }
 
     private void OnMentionQuery(string query)
@@ -190,8 +194,13 @@ internal sealed class CopilotPanel : IDisposable
         _channel.Send(PanelMessages.ChipsAdded(chips));
     }
 
+    /// <summary>
+    /// <paramref name="json"/> is null unless copilot.html posted it (S-16); that check also guards the dropped file
+    /// paths of <see cref="OnDrop"/>. PanelMessages parses the content defensively.
+    /// </summary>
     private void OnMessage(string? json, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        if (json is null) return;
         switch (_channel.Receive(json))
         {
             case PanelEvent.Close: _close(); break;
@@ -199,27 +208,46 @@ internal sealed class CopilotPanel : IDisposable
             case PanelEvent.OpenLink link: Shell.OpenUrl(link.Url); break; // never navigated inside the page
             case PanelEvent.Send s:
                 var sent = _chips.Resolve(s.ChipIds); // only chips Pollux showed; the page names them by id
-                _ = Task.Run(() => _chat.SendAsync(s.Text, sent, CancellationToken.None));
+                _ = RunAsync(() => _chat.SendAsync(s.Text, sent, CancellationToken.None));
                 break;
             case PanelEvent.Mention m: OnMentionQuery(m.Query); break;
             case PanelEvent.ContextRequest: RefreshContext(); break;
             case PanelEvent.Drop: OnDrop(e); break;
-            case PanelEvent.Cancel: _ = Task.Run(() => _chat.CancelAsync(CancellationToken.None)); break;
+            case PanelEvent.Cancel: _ = RunAsync(() => _chat.CancelAsync(CancellationToken.None)); break;
             case PanelEvent.Approve a: _chat.Answer(a.Id, a.Answer); break;
             case PanelEvent.ActionLogRequest: _chat.ShowActionLog(); break;
             case PanelEvent.UseActiveFolder:
                 var folder = _context().Active.Folder;
-                _ = Task.Run(() => _chat.SetWorkingFolderAsync(folder));
+                _ = RunAsync(() => _chat.SetWorkingFolderAsync(folder));
                 break;
             case PanelEvent.ChooseWorkingFolder: _ = ChooseWorkingFolderAsync(); break;
             case PanelEvent.ClearTainted: _chat.ClearTainted(); break;
-            case PanelEvent.SetAgentMode m: _ = Task.Run(() => _chat.SetAgentModeAsync(m.Mode, CancellationToken.None)); break;
-            case PanelEvent.SetPermissionMode m: _ = Task.Run(() => _chat.SetPermissionModeAsync(m.Mode, CancellationToken.None)); break;
-            case PanelEvent.SetSandbox m: _ = Task.Run(() => _chat.SetSandboxAsync(m.Enabled, CancellationToken.None)); break;
-            case PanelEvent.NewChat: _ = Task.Run(() => _chat.NewChatAsync()); break;
-            case PanelEvent.OpenChat o: _ = Task.Run(() => _chat.OpenAsync(o.Id, CancellationToken.None)); break;
-            case PanelEvent.DeleteChat d: _ = Task.Run(() => _chat.DeleteAsync(d.Id, CancellationToken.None)); break;
+            case PanelEvent.SetAgentMode m: _ = RunAsync(() => _chat.SetAgentModeAsync(m.Mode, CancellationToken.None)); break;
+            case PanelEvent.SetPermissionMode m: _ = RunAsync(() => _chat.SetPermissionModeAsync(m.Mode, CancellationToken.None)); break;
+            case PanelEvent.SetSandbox m: _ = RunAsync(() => _chat.SetSandboxAsync(m.Enabled, CancellationToken.None)); break;
+            case PanelEvent.NewChat: _ = RunAsync(() => _chat.NewChatAsync()); break;
+            case PanelEvent.OpenChat o: _ = RunAsync(() => _chat.OpenAsync(o.Id, CancellationToken.None)); break;
+            case PanelEvent.DeleteChat d: _ = RunAsync(() => _chat.DeleteAsync(d.Id, CancellationToken.None)); break;
             case PanelEvent.SelectModel m: _chat.SelectModel(m.Id); break;
+        }
+    }
+
+    /// <summary>
+    /// Runs a Chat call off the UI thread. An exception the call does not handle itself (e.g. one thrown before its own
+    /// try/catch) shows in the Chat and goes to errors.log instead of being lost with the discarded task.
+    /// </summary>
+    private async Task RunAsync(Func<Task> work)
+    {
+        try
+        {
+            await Task.Run(work).ConfigureAwait(false);
+        }
+#pragma warning disable CA1031 // Any failure of a fire-and-forget Chat call is shown, never swallowed.
+        catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning restore CA1031
+        {
+            CrashLog.Write(ex);
+            Post(PanelMessages.ChatError(ex.Message));
         }
     }
 
@@ -240,7 +268,7 @@ internal sealed class CopilotPanel : IDisposable
         }
 
         if (string.IsNullOrEmpty(folder) || _disposed) return;
-        _ = Task.Run(() => _chat.SetWorkingFolderAsync(folder));
+        _ = RunAsync(() => _chat.SetWorkingFolderAsync(folder));
     }
 
     public void Dispose()

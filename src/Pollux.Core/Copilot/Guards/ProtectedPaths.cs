@@ -29,6 +29,21 @@ public sealed class ProtectedPaths
         "*.key",
         @"%APPDATA%\Pollux",
         @"%LOCALAPPDATA%\Pollux",
+
+        // Developer credential stores (SECURITY.md S-13).
+        @"%APPDATA%\GitHub CLI\hosts.yml",
+        @"~\.config\gh\hosts.yml",
+        ".git-credentials",
+        @"~\.config\git\credentials",
+        ".npmrc",
+        @"~\.docker\config.json",
+        @"~\.kube\config",
+        @"%APPDATA%\NuGet\NuGet.Config",
+        "*.kdbx",
+
+        // SSH private keys (id_rsa, id_ed25519_work, ...) wherever they were copied to. The trailing dot means "no
+        // extension" as in cmd's dir *.: id_rsa.pub and src\id_generator.cs stay readable, and so does src\*.cs.
+        "id_*.",
     ];
 
     private readonly PathPatterns _patterns;
@@ -126,9 +141,20 @@ public sealed class PathPatterns
         return null;
     }
 
-    /// <summary>A name pattern against one name of the path; a wildcard at the start of the name does not stand for a leading dot (as in POSIX shells), so *.cs is not taken for .env.cs.</summary>
-    private static bool NameMatches(string pattern, string name) =>
-        !(pattern.StartsWith('.') && !name.StartsWith('.')) && Glob.Intersect(pattern, name);
+    /// <summary>
+    /// A name pattern against one name of the path; a wildcard at the start of the name does not stand for a leading dot
+    /// (as in POSIX shells), so *.cs is not taken for .env.cs. A pattern ending in a dot (<c>id_*.</c>) matches names
+    /// without an extension only, as <c>dir *.</c> does in cmd.
+    /// </summary>
+    private static bool NameMatches(string pattern, string name)
+    {
+        if (pattern.Length > 1 && pattern.EndsWith('.'))
+        {
+            return !name.Contains('.', StringComparison.Ordinal) && Glob.Intersect(pattern[..^1], name);
+        }
+
+        return !(pattern.StartsWith('.') && !name.StartsWith('.')) && Glob.Intersect(pattern, name);
+    }
 
     private static bool IsLocation(string pattern) =>
         pattern.Contains('\\', StringComparison.Ordinal) || pattern.Contains('/', StringComparison.Ordinal);
@@ -200,6 +226,10 @@ public static partial class GuardPaths
 
         var local = rest.TrimStart('/');
         if (local.Length >= 2 && char.IsLetter(local[0]) && local[1] is ':' or '|') return local[0] + ":" + local[2..].Replace('/', '\\');
+
+        // file:////?/C:/x and file://localhost/C$/x: a device prefix or an admin share, canonicalised by Resolve.
+        if (local.StartsWith("?/", StringComparison.Ordinal) || local.StartsWith("./", StringComparison.Ordinal)) return @"\\" + local.Replace('/', '\\');
+        if (IsAdminShare(local.Split('/')[0])) return @"\\localhost\" + local.Replace('/', '\\');
         return rest.Replace('/', '\\');
     }
 
@@ -211,9 +241,24 @@ public static partial class GuardPaths
         return value ?? m.Value;
     });
 
+    /// <summary>The prefix a resolved path keeps when it names a device namespace (see <see cref="IsDevicePath"/>).</summary>
+    private const string DevicePrefix = @"\\?\";
+
+    /// <summary>
+    /// The absolute, canonical Windows path <paramref name="path"/> names, so that every spelling of a place is judged
+    /// alike (SECURITY.md S-04, S-17): device prefixes (<c>\\?\</c>, <c>\\.\</c>, <c>\??\</c>, <c>\\?\UNC\</c>) are
+    /// stripped, admin shares of the own machine (<c>\\localhost\C$</c>, <c>\\127.0.0.1\C$</c>, <c>\\&lt;COMPUTERNAME&gt;\C$</c>)
+    /// become the drive, and alternate data streams (<c>name:stream</c>, <c>name::$DATA</c>) and trailing dots and spaces
+    /// (which Windows drops) are removed from every name. A device namespace that is not a drive (GLOBALROOT, volumes,
+    /// physical drives, pipes) stays as <c>\\?\...</c>; <see cref="IsDevicePath"/> tells it apart, and the Guard Rules refuse it.
+    /// </summary>
     public static string Resolve(string path, GuardContext context)
     {
-        var expanded = ExpandShellVariables(path, context).Replace('/', '\\');
+        var expanded = StripPrefixes(ExpandShellVariables(path, context).Trim().Trim('"').Trim().Replace('/', '\\'), context);
+        if (IsDevicePath(expanded))
+        {
+            return expanded;
+        }
 
         // "\Windows" and "/tmp/x" are rooted on the Working Folder's drive, not relative to it.
         if (expanded.StartsWith('\\') && !WinPath.IsUnc(expanded) && context.WorkingFolder.Length >= 2 && context.WorkingFolder[1] == ':')
@@ -221,7 +266,105 @@ public static partial class GuardPaths
             expanded = context.WorkingFolder[..2] + expanded;
         }
 
-        return WinPath.Resolve(expanded, context.WorkingFolder, context.Environment);
+        // Variables expanded by WinPath.Resolve may bring a prefix of their own.
+        var resolved = StripPrefixes(WinPath.Resolve(expanded, context.WorkingFolder, context.Environment), context);
+        return IsDevicePath(resolved) ? resolved : WinPath.Normalize(StripStreams(resolved));
+    }
+
+    /// <summary>Whether a path returned by <see cref="Resolve"/> names a device namespace (<c>\\?\GLOBALROOT\...</c>, <c>\\.\PhysicalDrive0</c>, ...).</summary>
+    public static bool IsDevicePath(string resolved) => resolved.StartsWith(DevicePrefix, StringComparison.Ordinal);
+
+    /// <summary>Strips device prefixes and maps own admin shares to drives until neither applies; leaves a device namespace as \\?\...</summary>
+    private static string StripPrefixes(string path, GuardContext context)
+    {
+        var p = path;
+        while (true)
+        {
+            if (p.StartsWith(@"\\?\", StringComparison.Ordinal) || p.StartsWith(@"\\.\", StringComparison.Ordinal) || p.StartsWith(@"\??\", StringComparison.Ordinal))
+            {
+                var rest = p[4..].TrimStart('\\');
+                if (rest.StartsWith(@"UNC\", StringComparison.OrdinalIgnoreCase))
+                {
+                    p = @"\\" + rest[4..].TrimStart('\\');
+                    continue;
+                }
+
+                if (rest.Length >= 2 && char.IsAsciiLetter(rest[0]) && rest[1] == ':' && (rest.Length == 2 || rest[2] == '\\'))
+                {
+                    p = rest;
+                    continue;
+                }
+
+                return DevicePrefix + rest;
+            }
+
+            if (OwnAdminShare(p, context) is { } local)
+            {
+                p = local;
+                continue;
+            }
+
+            return p;
+        }
+    }
+
+    /// <summary>\\localhost\C$\x, \\127.0.0.1\C$\x or \\&lt;own host&gt;\C$\x as C:\x; null for anything else.</summary>
+    private static string? OwnAdminShare(string path, GuardContext context)
+    {
+        if (!WinPath.IsUnc(path))
+        {
+            return null;
+        }
+
+        var parts = path[2..].Split('\\', 3);
+        if (parts.Length < 2 || !IsAdminShare(parts[1]) || !IsOwnHost(parts[0], context))
+        {
+            return null;
+        }
+
+        return char.ToUpperInvariant(parts[1][0]) + @":\" + (parts.Length == 3 ? parts[2] : "");
+    }
+
+    private static bool IsAdminShare(string share) => share.Length == 2 && char.IsAsciiLetter(share[0]) && share[1] == '$';
+
+    /// <summary>Loopback names and addresses, and the own computer name (also with a domain suffix, failing closed).</summary>
+    private static bool IsOwnHost(string host, GuardContext context)
+    {
+        var h = host.Trim('[', ']');
+        if (h.Equals("localhost", StringComparison.OrdinalIgnoreCase) || h.StartsWith("127.", StringComparison.Ordinal) || h is "::1" or "0:0:0:0:0:0:0:1" || h == ".")
+        {
+            return true;
+        }
+
+        var own = context.Environment("COMPUTERNAME");
+        if (string.IsNullOrWhiteSpace(own))
+        {
+            return false;
+        }
+
+        var label = h.Split('.')[0];
+        return label.Equals(own, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Removes alternate data streams and trailing dots and spaces from every name after the root (C: or the UNC server).</summary>
+    private static string StripStreams(string path)
+    {
+        var unc = WinPath.IsUnc(path);
+        var segments = (unc ? path[2..] : path).Split('\\');
+        for (var i = 1; i < segments.Length; i++)
+        {
+            var name = segments[i];
+            var colon = name.IndexOf(':', StringComparison.Ordinal);
+            if (colon > 0)
+            {
+                name = name[..colon];
+            }
+
+            var trimmed = name.TrimEnd('.', ' ');
+            segments[i] = trimmed.Length > 0 && name is not "." and not ".." ? trimmed : name;
+        }
+
+        return (unc ? @"\\" : "") + string.Join('\\', segments);
     }
 
     [GeneratedRegex(@"\$\{env:(?<name>[A-Za-z_][A-Za-z0-9_]*)\}|\$env:(?<name>[A-Za-z_][A-Za-z0-9_]*)|\$\{(?<name>HOME)\}|\$(?<name>HOME)\b", RegexOptions.IgnoreCase)]

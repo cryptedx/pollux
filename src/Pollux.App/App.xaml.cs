@@ -88,6 +88,9 @@ public partial class App : Application
 
     /// <summary>All copies and moves of all windows, run one after another.</summary>
     internal Core.Operations.Transfers Transfers { get; } = new();
+
+    /// <summary>Undo and redo of file operations, shared by all windows; queue jobs are recorded when they end (see Launch).</summary>
+    internal Core.Operations.UndoHistory Undo { get; } = new();
     internal DispatcherQueue Dispatcher { get; private set; } = null!;
     internal static App Instance => (App)Current;
 
@@ -109,6 +112,7 @@ public partial class App : Application
         StartupLog.Mark("onLaunched");
         Dispatcher = DispatcherQueue.GetForCurrentThread();
         Services = new AppServices(Dispatcher);
+        Undo.Follow(Transfers);
         // Cheap: no SDK client and no CLI process until ConnectAsync (first Copilot use).
         Copilot = new CopilotHost(CreateCopilotConnection, CopilotAvailable);
         CopilotMonitor = new CopilotConnectionMonitor(Copilot);
@@ -121,10 +125,24 @@ public partial class App : Application
         StartupLog.Mark("services");
 
         Dispatch(LaunchRequest.Parse(_args, Directory.Exists, File.Exists), coldStart: true);
+        if (MainWindow.IsElevated) Dispatcher.TryEnqueue(DispatcherQueuePriority.Low, WarnIfAdminInstanceIsUserWritable);
 
         // Everything below is not needed for the first frame.
         Dispatcher.TryEnqueue(DispatcherQueuePriority.Low, StartBackgroundServices);
         AppInstance.GetCurrent().Activated += OnRedirectedActivation;
+    }
+
+    /// <summary>
+    /// Once per start of the Admin Instance: warns when Pollux.exe lives in a folder the non-elevated user can write to
+    /// (the per-user install), since any process of that user could have replaced it (ADR 0008, SECURITY.md S-09).
+    /// </summary>
+    private void WarnIfAdminInstanceIsUserWritable()
+    {
+        var folder = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
+        string[] adminOnly = [Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)];
+        if (!Pollux.Core.Launch.InstallLocation.IsUserWritable(folder, adminOnly)) return;
+        (_windows.FirstOrDefault(w => !w.IsHidden) ?? _windows.FirstOrDefault())?.ShowToast(
+            "Admin Instance runs from a folder your normal account can change. Install with install.ps1 -AllUsers to run it from Program Files.", 15);
     }
 
     private void StartBackgroundServices()
@@ -280,6 +298,9 @@ public partial class App : Application
     /// </summary>
     private void Dispatch(LaunchRequest r, bool coldStart, long requested = 0)
     {
+        // Any process of the non-elevated user can forward a command line; the elevated instance doesn't run its commands (S-09).
+        if (MainWindow.IsElevated) r = r.ForAdminInstance();
+
         if (coldStart)
         {
             if (!r.WantsNoWindow || r.Target is not null)

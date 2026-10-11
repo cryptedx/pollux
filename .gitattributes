@@ -1,0 +1,3 @@
+# Vendored third-party web bundles: keep them out of the repo language stats.
+src/Pollux.App/Assets/web/monaco/** linguist-vendored
+src/Pollux.App/Assets/web/xterm/** linguist-vendored

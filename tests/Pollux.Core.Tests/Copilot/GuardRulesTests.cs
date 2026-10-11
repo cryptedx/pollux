@@ -341,6 +341,7 @@ public sealed class GuardRulesTests
         AssertDecision(GuardDecision.Ask, rules.Evaluate(ToolRequest.Shell("git status"), tainted), "shell");
         AssertDecision(GuardDecision.Ask, rules.Evaluate(ToolRequest.Write(@"C:\repos\app\x.txt"), tainted), "write inside");
         AssertDecision(GuardDecision.Ask, rules.Evaluate(ToolRequest.Url("https://example.com"), tainted), "url");
+        AssertDecision(GuardDecision.Ask, rules.Evaluate(ToolRequest.Other(), tainted), "other tools (S-12)");
         StringAssert.Contains(rules.Evaluate(ToolRequest.Shell("git status"), tainted).Reason, "Tainted");
     }
 
@@ -350,7 +351,6 @@ public sealed class GuardRulesTests
         var rules = new GuardRules();
         var tainted = Context(tainted: true);
         AssertDecision(GuardDecision.Allow, rules.Evaluate(ToolRequest.Read(@"C:\repos\app\README.md"), tainted), "read");
-        AssertDecision(GuardDecision.Allow, rules.Evaluate(ToolRequest.Other(), tainted), "other tools");
         AssertDecision(GuardDecision.Deny, rules.Evaluate(ToolRequest.Read(@"C:\repos\app\.env"), tainted), "secret");
         AssertDecision(GuardDecision.Deny, rules.Evaluate(ToolRequest.Shell("format D:"), tainted), "blocked");
     }

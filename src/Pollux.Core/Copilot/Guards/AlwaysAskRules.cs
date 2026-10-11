@@ -25,6 +25,19 @@ internal static partial class AlwaysAskRules
         "curl", "wget", "invoke-webrequest", "invoke-restmethod", "scp", "sftp", "ssh", "ftp", "tftp", "rsync", "telnet",
         "nc", "ncat", "netcat", "test-netconnection", "send-mailmessage", "start-bitstransfer", "bitsadmin",
         "enter-pssession", "new-pssession", "gh", "az", "aws", "gcloud", "npx",
+        // DNS lookups and pings carry data out in host names (SECURITY.md S-11).
+        "nslookup", "resolve-dnsname", "dig", "ping", "test-connection", "tracert", "pathping", "nltest",
+    };
+
+    /// <summary>
+    /// Environment variables commands use as path prefixes (<c>$env:TEMP\log.txt</c>, <c>%LOCALAPPDATA%\Pollux</c>); reading
+    /// any other variable may reveal a token (<c>GH_TOKEN</c>) and asks (SECURITY.md S-17).
+    /// </summary>
+    private static readonly HashSet<string> PathVariables = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "SystemRoot", "windir",
+        "SystemDrive", "ProgramData", "ProgramFiles", "ProgramW6432", "CommonProgramFiles", "PUBLIC", "ALLUSERSPROFILE",
+        "OneDrive", "OneDriveCommercial", "OneDriveConsumer",
     };
 
     private static readonly Dictionary<string, string[]> PackageInstalls = new(StringComparer.Ordinal)
@@ -79,7 +92,52 @@ internal static partial class AlwaysAskRules
         {
             yield return $"Reaches the network ({c.RawName})";
         }
+
+        if (c.Name == "setx")
+        {
+            yield return "Persistent environment change (setx)";
+        }
+
+        if (ReadsEnvironment(c))
+        {
+            yield return ReadsEnvironmentReason;
+        }
     }
+
+    /// <summary>The reason given when a command reads environment variables (they may hold tokens, SECURITY.md S-17).</summary>
+    public const string ReadsEnvironmentReason = "Reads environment variables";
+
+    /// <summary>
+    /// The command lists or reads environment variables: <c>printenv</c>, bare <c>env</c>, <c>set</c> / <c>export</c> without
+    /// an assignment, the <c>env:</c> drive, or <c>$env:NAME</c> / <c>%NAME%</c> of a variable that is not a path prefix.
+    /// </summary>
+    private static bool ReadsEnvironment(SimpleCommand c)
+    {
+        var args = c.Arguments;
+        var lists = c.Name switch
+        {
+            "printenv" => true,
+            "env" => args.Count == 0,
+            "set" => args.Count == 0 || (!args[0].Contains('=', StringComparison.Ordinal) && !args[0].StartsWith('/')),
+            "export" => args.Count == 0 || args[0] == "-p",
+            _ => false,
+        };
+
+        return lists || args.Prepend(c.RawName).Any(a => IsEnvDrive(a) || NamesEnvironmentVariable(a));
+    }
+
+    /// <summary>A path on PowerShell's env: drive (<c>env:</c>, <c>Env:\GH_TOKEN</c>, <c>-Path:env:X</c>).</summary>
+    private static bool IsEnvDrive(string a)
+    {
+        var value = a.StartsWith('-') && a.Contains(':', StringComparison.Ordinal) ? a.Split(':', 2)[1] : a;
+        return value.StartsWith("env:", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool NamesEnvironmentVariable(string a) =>
+        EnvironmentVariable().Matches(a).Any(m => !PathVariables.Contains(m.Groups["ps"].Success ? m.Groups["ps"].Value : m.Groups["cmd"].Value));
+
+    [GeneratedRegex(@"\$\{?env:(?<ps>\w+)|%(?<cmd>[A-Za-z_]\w*)%", RegexOptions.IgnoreCase)]
+    private static partial Regex EnvironmentVariable();
 
     /// <summary>The command reaches the network (downloads, remote shells, package installs, git fetch/push, ...).</summary>
     public static bool ReachesNetwork(SimpleCommand c) =>
@@ -184,6 +242,38 @@ internal static partial class AlwaysAskRules
         {
             yield return $"Reaches the network (git {sub})";
         }
+
+        if (sub == "config" && rest.Any(a => a is "--global" or "--system"))
+        {
+            yield return "Changes global git configuration (git config --global/--system)";
+        }
+    }
+
+    /// <summary>
+    /// The file <c>git config --file &lt;f&gt;</c> / <c>-f &lt;f&gt;</c> / <c>--file=&lt;f&gt;</c> works on; null for any other command.
+    /// The Guard Rules treat it as a write target (SECURITY.md S-11): the global config under another name is persistence.
+    /// </summary>
+    public static string? GitConfigFile(SimpleCommand c)
+    {
+        if (c.Name != "git" || GitSubcommand(c.Arguments) is not ("config", var rest))
+        {
+            return null;
+        }
+
+        for (var i = 0; i < rest.Count; i++)
+        {
+            if (rest[i] is "--file" or "-f" && i + 1 < rest.Count)
+            {
+                return rest[i + 1];
+            }
+
+            if (rest[i].StartsWith("--file=", StringComparison.Ordinal))
+            {
+                return rest[i]["--file=".Length..];
+            }
+        }
+
+        return null;
     }
 
     /// <summary>git's subcommand (lower case) and its arguments, after git's own options; null when there is none.</summary>

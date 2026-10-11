@@ -5,6 +5,69 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:Pollux.App.ViewModels">
 
+    <UserControl.Resources>
+        <!-- Tiles and Large Icons: ListViews of their own with a wrapping panel, so keyboard and selection work alike in every view mode.
+             Template layout is read by ShowThumbnail: root.Children[0] is the icon grid = [fallback, thumbnail image]. -->
+        <Style x:Key="PolluxTileStyle" TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="Margin" Value="2" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        </Style>
+        <ItemsPanelTemplate x:Key="PolluxTilesPanel">
+            <ItemsWrapGrid Orientation="Horizontal" ItemWidth="264" ItemHeight="64" Margin="4,4,4,0" />
+        </ItemsPanelTemplate>
+        <ItemsPanelTemplate x:Key="PolluxIconsPanel">
+            <ItemsWrapGrid Orientation="Horizontal" ItemWidth="124" ItemHeight="148" Margin="4,4,4,0" />
+        </ItemsPanelTemplate>
+        <DataTemplate x:Key="PolluxTileTemplate" x:DataType="vm:FileItem">
+            <Grid ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="48" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid Width="48" Height="48" VerticalAlignment="Center">
+                    <Grid>
+                        <Border Visibility="{x:Bind FolderVisibility}" Background="{ThemeResource PolluxFolderBrush}" CornerRadius="3,6,4,4" Width="40" Height="30" />
+                        <Border Visibility="{x:Bind BadgeVisibility}" BorderBrush="{ThemeResource PolluxLineBrush}" Background="{ThemeResource PolluxSurface2Brush}" BorderThickness="1" CornerRadius="4" Width="36" Height="44">
+                            <TextBlock Text="{x:Bind Badge}" FontFamily="{StaticResource PolluxMono}" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{ThemeResource PolluxMutedBrush}" />
+                        </Border>
+                    </Grid>
+                    <Image Stretch="Uniform" />
+                </Grid>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                    <TextBlock Text="{x:Bind Name}" Opacity="{x:Bind NameOpacity}" TextTrimming="CharacterEllipsis" FontSize="13" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{x:Bind TypeText}" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxMutedBrush}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{x:Bind SizeText, Mode=OneWay}" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxMutedBrush}" />
+                        <TextBlock Text="{x:Bind CloudGlyph}" FontSize="10" Foreground="{ThemeResource PolluxMutedBrush}" />
+                        <TextBlock Text="{x:Bind GitText}" FontFamily="{StaticResource PolluxMono}" FontSize="11" FontWeight="SemiBold" Foreground="{x:Bind GitBrush}" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+        <DataTemplate x:Key="PolluxIconTemplate" x:DataType="vm:FileItem">
+            <Grid RowSpacing="4">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="96" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid Width="96" Height="96" HorizontalAlignment="Center">
+                    <Grid>
+                        <Border Visibility="{x:Bind FolderVisibility}" Background="{ThemeResource PolluxFolderBrush}" CornerRadius="5,10,7,7" Width="80" Height="60" />
+                        <Border Visibility="{x:Bind BadgeVisibility}" BorderBrush="{ThemeResource PolluxLineBrush}" Background="{ThemeResource PolluxSurface2Brush}" BorderThickness="1" CornerRadius="6" Width="68" Height="88">
+                            <TextBlock Text="{x:Bind Badge}" FontFamily="{StaticResource PolluxMono}" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{ThemeResource PolluxMutedBrush}" />
+                        </Border>
+                    </Grid>
+                    <Image Stretch="Uniform" />
+                </Grid>
+                <TextBlock Grid.Row="1" Text="{x:Bind Name}" Opacity="{x:Bind NameOpacity}" FontSize="12" TextAlignment="Center" HorizontalAlignment="Center" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" />
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
     <Border x:Name="Card"
             CornerRadius="8,8,0,0"
             BorderThickness="1"
@@ -43,7 +106,11 @@
                     </ScrollViewer>
                 </Grid>
                 <TextBox x:Name="PathBox" Visibility="Collapsed" FontFamily="{StaticResource PolluxMono}" FontSize="12" MinHeight="26" Padding="6,3" KeyDown="PathBox_KeyDown" LostFocus="PathBox_LostFocus" />
-                <TextBlock x:Name="InfoText" Grid.Column="1" VerticalAlignment="Center" Margin="8,0,4,0" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Spacing="6" Margin="8,0,4,0">
+                    <TextBlock x:Name="InfoText" VerticalAlignment="Center" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" />
+                    <!-- Shown only inside an untrusted repository (ADR 0006): adds its root to Trusted Folders. -->
+                    <Button x:Name="TrustButton" Visibility="Collapsed" Style="{StaticResource PolluxFlatButton}" Padding="6,1" FontSize="12" Foreground="{ThemeResource PolluxAccentBrush}" Content="Trust this folder" Click="TrustButton_Click" />
+                </StackPanel>
             </Grid>
 
             <!-- Filter -->
@@ -60,6 +127,24 @@
                 </Grid>
             </Border>
 
+            <!-- Folder Search (shares the Filter's row; the two are never open together) -->
+            <Border x:Name="SearchBar" Grid.Row="2" Visibility="Collapsed" Margin="8,6,8,2" Padding="8,0" CornerRadius="5" BorderThickness="1" BorderBrush="{ThemeResource PolluxAccentBrush}" Background="{ThemeResource PolluxSurface2Brush}">
+                <Grid ColumnSpacing="6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="3*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="2*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="⌕ all" VerticalAlignment="Center" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxMutedBrush}" ToolTipService.ToolTip="Search this folder and its subfolders" />
+                    <TextBox x:Name="SearchNameBox" Grid.Column="1" PlaceholderText="name, *.ext, after:7d, size&gt;1mb… (Enter)" BorderThickness="0" Background="Transparent" FontFamily="{StaticResource PolluxMono}" FontSize="12" MinHeight="26" Padding="0,4" KeyDown="SearchBox_KeyDown" />
+                    <Border Grid.Column="2" Width="1" Margin="0,5" Background="{ThemeResource PolluxLineBrush}" />
+                    <TextBox x:Name="SearchTextBox" Grid.Column="3" PlaceholderText="containing text…" BorderThickness="0" Background="Transparent" FontFamily="{StaticResource PolluxMono}" FontSize="12" MinHeight="26" Padding="0,4" KeyDown="SearchBox_KeyDown" />
+                    <TextBlock x:Name="SearchStatus" Grid.Column="4" VerticalAlignment="Center" MaxWidth="260" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxMutedBrush}" />
+                </Grid>
+            </Border>
+
             <!-- Content -->
             <Grid Grid.Row="3">
                 <Grid x:Name="ListHost">
@@ -67,19 +152,25 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <Grid x:Name="Header" Background="{ThemeResource PolluxSurface2Brush}" Padding="14,0,14,0" Height="24" ColumnSpacing="8">
+                    <Grid x:Name="Header" Background="{ThemeResource PolluxSurface2Brush}" Padding="14,0,14,0" Height="24" ColumnSpacing="8" RightTapped="Header_RightTapped">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="128" />
                             <ColumnDefinition Width="70" />
                             <ColumnDefinition Width="74" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <Button x:Name="SortName" Style="{StaticResource PolluxFlatButton}" Padding="0" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" Content="Name" Click="Sort_Click" Tag="Name" />
                         <Button x:Name="SortModified" Grid.Column="1" Style="{StaticResource PolluxFlatButton}" Padding="0" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" Content="Modified" Click="Sort_Click" Tag="Modified" />
                         <Button x:Name="SortType" Grid.Column="2" Style="{StaticResource PolluxFlatButton}" Padding="0" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" Content="Type" Click="Sort_Click" Tag="Type" />
                         <Button x:Name="SortSize" Grid.Column="3" Style="{StaticResource PolluxFlatButton}" Padding="0" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" Content="Size" HorizontalAlignment="Right" Click="Sort_Click" Tag="Size" />
+                        <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="SortCreated" Visibility="Collapsed" Width="128" HorizontalContentAlignment="Left" Style="{StaticResource PolluxFlatButton}" Padding="0" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" Content="Created" Click="Sort_Click" Tag="Created" />
+                            <Button x:Name="SortAttributes" Visibility="Collapsed" Width="44" HorizontalContentAlignment="Left" Style="{StaticResource PolluxFlatButton}" Padding="0" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" Content="Attr" Click="Sort_Click" Tag="Attributes" />
+                            <Button x:Name="SortExtension" Visibility="Collapsed" Width="70" HorizontalContentAlignment="Left" Style="{StaticResource PolluxFlatButton}" Padding="0" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" Content="Ext" Click="Sort_Click" Tag="Extension" />
+                        </StackPanel>
                     </Grid>
-                    <ListView x:Name="List"
+                    <ListView x:Name="DetailsList"
                               Grid.Row="1"
                               SelectionMode="Extended"
                               IsTabStop="True"
@@ -95,6 +186,21 @@
                               AllowDrop="True"
                               DragOver="List_DragOver"
                               Drop="List_Drop">
+                        <!-- The header shows the group's ToString(): a binding to the group does not resolve in the header template. -->
+                        <ListView.GroupStyle>
+                            <GroupStyle>
+                                <GroupStyle.HeaderContainerStyle>
+                                    <Style TargetType="ListViewHeaderItem">
+                                        <Setter Property="MinHeight" Value="0" />
+                                        <Setter Property="Padding" Value="14,6,0,2" />
+                                        <Setter Property="Margin" Value="0" />
+                                        <Setter Property="FontSize" Value="12" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                        <Setter Property="Foreground" Value="{ThemeResource PolluxMutedBrush}" />
+                                    </Style>
+                                </GroupStyle.HeaderContainerStyle>
+                            </GroupStyle>
+                        </ListView.GroupStyle>
                         <ListView.ItemTemplate>
                             <DataTemplate x:DataType="vm:FileItem">
                                 <Grid ColumnSpacing="8">
@@ -103,6 +209,7 @@
                                         <ColumnDefinition Width="128" />
                                         <ColumnDefinition Width="70" />
                                         <ColumnDefinition Width="74" />
+                                        <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
                                         <Grid Width="16" Height="16">
@@ -111,17 +218,59 @@
                                                 <TextBlock Text="{x:Bind Badge}" FontFamily="{StaticResource PolluxMono}" FontSize="7.5" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{ThemeResource PolluxMutedBrush}" />
                                             </Border>
                                         </Grid>
-                                        <TextBlock x:Name="NameText" Text="{x:Bind Name}" Opacity="{x:Bind NameOpacity}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" FontSize="13" />
+                                        <TextBlock x:Name="NameText" Text="{x:Bind Name}" ToolTipService.ToolTip="{x:Bind LinkTip}" Opacity="{x:Bind NameOpacity}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" FontSize="13" />
                                         <TextBlock Text="{x:Bind CloudGlyph}" FontSize="10" VerticalAlignment="Center" Foreground="{ThemeResource PolluxMutedBrush}" />
                                         <TextBlock Text="{x:Bind GitText}" FontFamily="{StaticResource PolluxMono}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" Foreground="{x:Bind GitBrush}" />
+                                        <TextBlock Text="{x:Bind CompareText, Mode=OneWay}" Visibility="{x:Bind CompareVisibility, Mode=OneWay}" FontFamily="{StaticResource PolluxMono}" FontSize="10.5" VerticalAlignment="Center" Foreground="{x:Bind CompareBrush, Mode=OneWay}" />
+                                        <TextBlock Text="{x:Bind OriginText}" Visibility="{x:Bind OriginVisibility}" FontFamily="{StaticResource PolluxMono}" FontSize="11" VerticalAlignment="Center" Foreground="{ThemeResource PolluxMutedBrush}" />
                                     </StackPanel>
                                     <TextBlock Grid.Column="1" Text="{x:Bind ModifiedText}" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                                     <TextBlock Grid.Column="2" Text="{x:Bind TypeText}" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Grid.Column="3" Text="{x:Bind SizeText}" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                                    <TextBlock Grid.Column="3" Text="{x:Bind SizeText, Mode=OneWay}" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                                    <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="8">
+                                        <TextBlock Width="128" Visibility="{x:Bind CreatedVisibility}" Text="{x:Bind CreatedText}" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Width="44" Visibility="{x:Bind AttributesVisibility}" Text="{x:Bind AttributesText}" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center" />
+                                        <TextBlock Width="70" Visibility="{x:Bind ExtensionVisibility}" Text="{x:Bind ExtensionText}" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
                                 </Grid>
                             </DataTemplate>
                         </ListView.ItemTemplate>
                     </ListView>
+                    <!-- One ListView per view mode with fixed panel, template and style: nothing is swapped on a live ListView. -->
+                    <ListView x:Name="TilesList" Grid.Row="1" Visibility="Collapsed"
+                              ItemsPanel="{StaticResource PolluxTilesPanel}"
+                              ItemContainerStyle="{StaticResource PolluxTileStyle}"
+                              ItemTemplate="{StaticResource PolluxTileTemplate}"
+                              SelectionMode="Extended"
+                              IsTabStop="True"
+                              TabNavigation="Once"
+                              DoubleTapped="List_DoubleTapped"
+                              RightTapped="List_RightTapped"
+                              GotFocus="List_GotFocus"
+                              SelectionChanged="List_SelectionChanged"
+                              ContainerContentChanging="List_ContainerContentChanging"
+                              CanDragItems="True"
+                              DragItemsStarting="List_DragItemsStarting"
+                              AllowDrop="True"
+                              DragOver="List_DragOver"
+                              Drop="List_Drop" />
+                    <ListView x:Name="IconsList" Grid.Row="1" Visibility="Collapsed"
+                              ItemsPanel="{StaticResource PolluxIconsPanel}"
+                              ItemContainerStyle="{StaticResource PolluxTileStyle}"
+                              ItemTemplate="{StaticResource PolluxIconTemplate}"
+                              SelectionMode="Extended"
+                              IsTabStop="True"
+                              TabNavigation="Once"
+                              DoubleTapped="List_DoubleTapped"
+                              RightTapped="List_RightTapped"
+                              GotFocus="List_GotFocus"
+                              SelectionChanged="List_SelectionChanged"
+                              ContainerContentChanging="List_ContainerContentChanging"
+                              CanDragItems="True"
+                              DragItemsStarting="List_DragItemsStarting"
+                              AllowDrop="True"
+                              DragOver="List_DragOver"
+                              Drop="List_Drop" />
                     <TextBlock x:Name="EmptyText" Grid.Row="1" Visibility="Collapsed" IsHitTestVisible="False" Margin="20" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" TextWrapping="Wrap" />
                 </Grid>
                 <ScrollViewer x:Name="HomeHost" Visibility="Collapsed" Padding="18,12">

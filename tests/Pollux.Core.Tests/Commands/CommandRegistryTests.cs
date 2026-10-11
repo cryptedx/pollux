@@ -34,6 +34,15 @@ public sealed class CommandRegistryTests
     }
 
     [TestMethod]
+    public void SelectionCommandsAreBoundToTheirDefaults()
+    {
+        var keys = CommandRegistry.Keybindings(new CopilotSettings(), []);
+
+        Assert.AreEqual("file.selectNone", keys.Resolve(KeyChord.Parse("ctrl+shift+a"), Context.Of("listFocused")));
+        Assert.AreEqual("file.invertSelection", keys.Resolve(KeyChord.Parse("ctrl+i"), Context.Of("listFocused")));
+    }
+
+    [TestMethod]
     public void CopilotCommandsAreBoundWhileCopilotIsOff()
     {
         var keys = CommandRegistry.Keybindings(new CopilotSettings { Enabled = false }, []);

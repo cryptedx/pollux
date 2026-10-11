@@ -46,11 +46,20 @@ public sealed class CopilotChat(
     /// <summary>Shown in the Copilot Panel when a tool ran without the Guard Rules hook having seen it.</summary>
     public const string HookDidNotRunWarning = "Guard Rules hook did not run; switched to Manual";
 
+    /// <summary>Shown when a prompt is refused in Allow All or Autopilot because the CLI did not confirm the sandbox state.</summary>
+    public const string SandboxUnconfirmed =
+        "Not sent: the sandbox state could not be confirmed. Allow All and Autopilot need it; send again to retry, or switch to Manual or Assisted in Interactive mode.";
+
+    /// <summary>Shown when a prompt is refused in Allow All or Autopilot because the organization's Copilot policy could not be read.</summary>
+    public const string ModePolicyUnconfirmed =
+        "Not sent: your organization's Copilot policy could not be checked. Allow All and Autopilot need it; send again to retry, or switch to Manual or Assisted in Interactive mode.";
+
     private readonly Lock _gate = new();
     private readonly Func<DateTimeOffset> _now = now ?? (() => DateTimeOffset.UtcNow);
     private readonly Func<ChatModes> _defaultModes = defaultModes ?? (() => ChatModes.Default);
     private ChatModes? _modes;            // of the current Chat; null until first asked (then the defaults)
     private ModePolicy _policy = ModePolicy.None;
+    private bool _policyRead;             // the open session's CLI told the organization's policy (false: _policy is only a guess)
     private SandboxPolicy _sandboxPolicy = SandboxPolicy.None;
     private bool? _sandboxChoice;         // the user's choice for the current Chat; null = the default for its modes
     private bool? _sandboxApplied;        // what the open session's CLI was last told
@@ -366,7 +375,7 @@ public sealed class CopilotChat(
             return false;
         }
 
-        if (!result.Applied) Refuse(mode, ModePolicy.BlockedByOrganization);
+        if (!result.Applied) Refuse(mode, ModePolicy.RefusedByCli);
         Remember(m => m with { Permission = result.Mode });
         await ApplySandboxAsync(session, cancellationToken).ConfigureAwait(false);
         return result.Applied;
@@ -427,6 +436,13 @@ public sealed class CopilotChat(
         {
             session = await SessionAsync(record, existing, cancellationToken).ConfigureAwait(false);
             if (!await ApplyModelAsync(session, cancellationToken).ConfigureAwait(false)) return false;
+            if (await UnconfirmedSafetyAsync(session, cancellationToken).ConfigureAwait(false) is { } refused)
+            {
+                post(PanelMessages.ChatError(refused));
+                SetIdle();
+                return false;
+            }
+
             await session.SendAsync(ContextPrompt.Compose(text, chips), cancellationToken).ConfigureAwait(false);
             lock (_gate) _onDisk = true;
             record.Model = Model;
@@ -636,6 +652,7 @@ public sealed class CopilotChat(
             _onDisk = false;
             _modes = null;
             _policy = ModePolicy.None;
+            _policyRead = false;
             _folderChosen = false;
             _chosenFolder = null;
             _sandboxPolicy = SandboxPolicy.None;
@@ -647,6 +664,58 @@ public sealed class CopilotChat(
         if (session is not null) await DropSessionAsync(session).ConfigureAwait(false);
     }
 
+
+    /// <summary>
+    /// Fail closed (S-17): in Allow All and Autopilot no one approves each action, so a prompt goes out only once the CLI has
+    /// told the organization's mode policy and confirmed the sandbox state. What is unconfirmed is tried again first, so a passing failure costs one refused prompt.
+    /// Null when the prompt may be sent, otherwise why not. Manual and Assisted in Interactive or Plan mode are not gated.
+    /// </summary>
+    private async Task<string?> UnconfirmedSafetyAsync(IChatSession session, CancellationToken cancellationToken)
+    {
+        bool policyRead;
+        lock (_gate)
+        {
+            if (!Unattended(CurrentModes())) return null;
+            policyRead = _policyRead;
+        }
+
+        if (!policyRead)
+        {
+            if (await ReadModePolicyAsync(session, cancellationToken).ConfigureAwait(false) is not { } policy) return ModePolicyUnconfirmed;
+            ChatModes modes;
+            lock (_gate)
+            {
+                // Keep what the CLI refused since (PermissionModeBlocked) on top of what the policy now says.
+                _policy = new ModePolicy(policy.AssistedBlocked ?? _policy.AssistedBlocked, policy.AllowAllBlocked ?? _policy.AllowAllBlocked);
+                _policyRead = true;
+                modes = CurrentModes();
+            }
+
+            PublishModes();
+            if (policy.BlockedReason(modes.Permission) is { } reason) return $"{ChatModes.Label(modes.Permission)} is not available: {reason}";
+        }
+
+        return await ApplySandboxAsync(session, cancellationToken).ConfigureAwait(false) ? null : SandboxUnconfirmed;
+    }
+
+    /// <summary>The organization's policy as the CLI tells it; null when it could not be read.</summary>
+    private static async Task<ModePolicy?> ReadModePolicyAsync(IChatSession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await session.GetModePolicyAsync(cancellationToken).ConfigureAwait(false);
+        }
+#pragma warning disable CA1031 // An unreadable policy is reported to the caller as null; it decides how to fail closed.
+        catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning restore CA1031
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Modes in which the CLI acts without asking for each action.</summary>
+    private static bool Unattended(ChatModes modes) =>
+        modes.Permission == CopilotPermissionMode.AllowAll || modes.Agent == CopilotAgentMode.Autopilot;
 
     /// <summary>Switches the open session to the selected model; a failure keeps the session and the old model.</summary>
     private async Task<bool> ApplyModelAsync(IChatSession session, CancellationToken cancellationToken)
@@ -738,22 +807,15 @@ public sealed class CopilotChat(
     /// </summary>
     private async Task ApplyModesAsync(IChatSession session, ChatRecord chat, bool existing, CancellationToken cancellationToken)
     {
-        ModePolicy policy;
-        try
-        {
-            policy = await session.GetModePolicyAsync(cancellationToken).ConfigureAwait(false);
-        }
-#pragma warning disable CA1031 // Unknown policy: the CLI still enforces it and refuses a blocked mode below.
-        catch (Exception ex) when (ex is not OperationCanceledException)
-#pragma warning restore CA1031
-        {
-            policy = ModePolicy.None;
-        }
-
+        // Unknown policy: the CLI still enforces it and refuses a blocked mode below; prompts in Allow All or Autopilot wait
+        // until it could be read (UnconfirmedSafetyAsync).
+        var read = await ReadModePolicyAsync(session, cancellationToken).ConfigureAwait(false);
+        var policy = read ?? ModePolicy.None;
         ChatModes modes;
         lock (_gate)
         {
             _policy = policy;
+            _policyRead = read is not null;
             modes = CurrentModes();
         }
 
@@ -766,8 +828,8 @@ public sealed class CopilotChat(
         var result = await session.SetPermissionModeAsync(modes.Permission, cancellationToken).ConfigureAwait(false);
         if (!result.Applied)
         {
-            Refuse(modes.Permission, ModePolicy.BlockedByOrganization);
-            post(PanelMessages.ChatError($"{ChatModes.Label(modes.Permission)} is not available: {ModePolicy.BlockedByOrganization} This Chat continues in {ChatModes.Label(result.Mode)}."));
+            var refused = Refuse(modes.Permission, ModePolicy.RefusedByCli);
+            post(PanelMessages.ChatError($"{ChatModes.Label(modes.Permission)} is not available: {refused} This Chat continues in {ChatModes.Label(result.Mode)}."));
         }
 
         await session.SetAgentModeAsync(modes.Agent, cancellationToken).ConfigureAwait(false);
@@ -801,12 +863,16 @@ public sealed class CopilotChat(
     /// <summary>The current Chat's modes; a new Chat starts with the defaults. Call under the lock.</summary>
     private ChatModes CurrentModes() => _modes ??= _defaultModes();
 
-    /// <summary>Marks a Permission Mode as blocked; an earlier, more specific reason is kept.</summary>
-    private void Refuse(CopilotPermissionMode mode, string reason)
+    /// <summary>
+    /// Marks a Permission Mode as blocked and returns the reason it now shows: an earlier, more specific reason (a policy
+    /// enforcement the CLI reported) is kept; a later one replaces this (PermissionModeBlocked).
+    /// </summary>
+    private string Refuse(CopilotPermissionMode mode, string reason)
     {
         lock (_gate)
         {
             if (_policy.BlockedReason(mode) is null) _policy = _policy.Block(mode, reason);
+            return _policy.BlockedReason(mode)!;
         }
     }
 

@@ -1,0 +1,53 @@
+<Project>
+  <!-- Expected SHA-256 of the Copilot CLI archive the GitHub.Copilot.SDK targets download for Pollux.App (ADR 0005, S-18).
+
+       The SDK only compares the archive with SHA256SUMS.txt from the same release, so anyone who can replace the
+       download (or a mirror set through CopilotCliReleaseBaseUrl) can replace the checksum too. These hashes are
+       recorded here, reviewed with the change that bumps the SDK, and checked after the SDK's download.
+
+       Bumping GitHub.Copilot.SDK to a version with a new CopilotCliVersion fails the build (POLLUX0019) until the
+       hashes for that CLI version are added below. Take them from the release's SHA256SUMS.txt
+       (https://github.com/github/copilot-cli/releases/download/v<version>/SHA256SUMS.txt) and confirm them against a
+       second source, e.g. the hash of the archive downloaded separately. Item identity: <CopilotCliVersion>/<platform>,
+       platform as the SDK names it (_CopilotPlatform: win32-x64, win32-arm64). -->
+  <ItemGroup>
+    <!-- Copilot CLI 1.0.94 (GitHub.Copilot.SDK 1.0.18): github-copilot-1.0.94-<platform>.tgz -->
+    <PolluxCopilotCliHash Include="1.0.94/win32-x64" Sha256="e0203c2ffa3150743bbd65c5af5c86d1615eda7240afa33aec0b2e1755831d31" />
+    <PolluxCopilotCliHash Include="1.0.94/win32-arm64" Sha256="52a67546e5643ba1fffdb25676b0ec0e0ff162e00d8c850be0436a4cf274e433" />
+  </ItemGroup>
+
+  <!-- Runs right after the SDK's _DownloadCopilotCli (same condition), before its files are registered for output and
+       publish. Checks the cached archive on every build, not only on a fresh download, so a tampered cache fails too. -->
+  <Target Name="PolluxVerifyCopilotCli" AfterTargets="_DownloadCopilotCli"
+          Condition="'$(TargetFramework)' != '' And '$(CopilotCliBinaryPath)' == '' And '$(CopilotSkipCliDownload)' != 'true' And '$(_CopilotPlatform)' != ''">
+    <PropertyGroup>
+      <_PolluxCliCacheDir>$(_CopilotCacheDir)</_PolluxCliCacheDir>
+      <_PolluxCliCacheDir Condition="'$(_PolluxCliCacheDir)' == ''">$(IntermediateOutputPath)copilot-cli\$(CopilotCliVersion)\$(_CopilotPlatform)</_PolluxCliCacheDir>
+      <_PolluxCliArchive>$([System.IO.Path]::Combine('$(_PolluxCliCacheDir)', 'copilot.tgz'))</_PolluxCliArchive>
+      <_PolluxCliKey>$(CopilotCliVersion)/$(_CopilotPlatform)</_PolluxCliKey>
+    </PropertyGroup>
+    <ItemGroup>
+      <_PolluxCliExpected Include="@(PolluxCopilotCliHash)" Condition="'%(Identity)' == '$(_PolluxCliKey)'" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_PolluxCliExpectedHash>@(_PolluxCliExpected->'%(Sha256)')</_PolluxCliExpectedHash>
+    </PropertyGroup>
+
+    <Error Code="POLLUX0019" Condition="'$(_PolluxCliExpectedHash)' == ''"
+           Text="No recorded SHA-256 for Copilot CLI $(CopilotCliVersion) ($(_CopilotPlatform)). Add it to build/CopilotCliHashes.targets after checking it against a second source." />
+    <Error Code="POLLUX0020" Condition="!Exists('$(_PolluxCliArchive)')"
+           Text="The Copilot CLI archive '$(_PolluxCliArchive)' is missing, so the cached CLI cannot be verified. Delete '$(_PolluxCliCacheDir)' to download it again." />
+
+    <GetFileHash Files="$(_PolluxCliArchive)" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="_PolluxCliActualHash" />
+    </GetFileHash>
+    <PropertyGroup>
+      <_PolluxCliMismatch Condition="'$(_PolluxCliActualHash.ToUpperInvariant())' != '$(_PolluxCliExpectedHash.ToUpperInvariant())'">true</_PolluxCliMismatch>
+    </PropertyGroup>
+
+    <!-- Throw the whole extracted bundle away, so the next build downloads again instead of reusing it. -->
+    <RemoveDir Directories="$(_PolluxCliCacheDir)" Condition="'$(_PolluxCliMismatch)' == 'true'" />
+    <Error Code="POLLUX0018" Condition="'$(_PolluxCliMismatch)' == 'true'"
+           Text="Copilot CLI $(CopilotCliVersion) ($(_CopilotPlatform)) does not match the hash recorded in build/CopilotCliHashes.targets: expected $(_PolluxCliExpectedHash), got $(_PolluxCliActualHash). The download was removed." />
+  </Target>
+</Project>

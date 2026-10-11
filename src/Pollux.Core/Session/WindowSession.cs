@@ -4,6 +4,9 @@ public sealed class TabSession
 {
     /// <summary>Folder path or <see cref="Navigation.WinPath.Home"/>.</summary>
     public string Location { get; set; } = Navigation.WinPath.Home;
+
+    /// <summary>The Tab's own view mode; null follows the files.viewMode setting.</summary>
+    public Files.ViewMode? ViewMode { get; set; }
 }
 
 public sealed class PaneSession

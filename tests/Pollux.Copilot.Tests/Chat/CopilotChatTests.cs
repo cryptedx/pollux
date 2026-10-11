@@ -30,14 +30,17 @@ public sealed class CopilotChatTests
 
     private ChatModes _defaults = new(CopilotAgentMode.Interactive, CopilotPermissionMode.Manual);
     private ModePolicy _policy = ModePolicy.None;
+    private readonly HashSet<CopilotPermissionMode> _cliRefuses = [];
     private SandboxPolicy _sandboxPolicy = SandboxPolicy.None;
+    private Exception? _sandboxFails;
+    private Exception? _policyFails;
 
     private CopilotChat Chat() => new(new ChatStore(_dir), (record, resume, approvals, _) =>
     {
         _approvals = approvals;
         if (_openFails is { } ex) return Task.FromException<IChatSession>(ex);
         _opened.Add((record.Id, resume, record.Model, record.WorkingFolder));
-        var s = new FakeSession { History = _history, Policy = _policy, SandboxPolicy = _sandboxPolicy };
+        var s = new FakeSession { History = _history, Policy = _policy, CliRefuses = _cliRefuses, SandboxPolicy = _sandboxPolicy, SandboxFails = _sandboxFails, PolicyFails = _policyFails };
         _sessions.Add(s);
         return Task.FromResult<IChatSession>(s);
     }, (id, _) =>
@@ -449,6 +452,114 @@ public sealed class CopilotChatTests
         CollectionAssert.Contains(Posted(), "chatError:Could not switch the sandbox on: boom");
     }
 
+    // S-17: in Allow All and Autopilot nobody approves each action, so the sandbox and the organization's mode policy are
+    // what limit the agent. A Chat must not send a prompt while either could not be confirmed (fail closed).
+
+    [TestMethod]
+    [DataRow(CopilotAgentMode.Interactive, CopilotPermissionMode.AllowAll)]
+    [DataRow(CopilotAgentMode.Autopilot, CopilotPermissionMode.Manual)]
+    [DataRow(CopilotAgentMode.Autopilot, CopilotPermissionMode.AllowAll)]
+    public async Task SandboxTheCliCannotSwitchBlocksPromptsInAllowAllAndAutopilot(CopilotAgentMode agent, CopilotPermissionMode permission)
+    {
+        _defaults = new ChatModes(agent, permission);
+        _sandboxFails = new InvalidOperationException("boom");
+        await using var chat = Chat();
+
+        Assert.IsFalse(await chat.SendAsync("rm -rf everything", TestContext.CancellationToken));
+
+        Assert.IsEmpty(_sessions.Single().Sent, "The prompt must not reach the CLI with an unconfirmed sandbox.");
+        CollectionAssert.Contains(Posted(), "chatError:Could not switch the sandbox on: boom");
+        CollectionAssert.Contains(Posted(), "chatError:" + CopilotChat.SandboxUnconfirmed);
+        Assert.IsFalse(chat.IsBusy);
+        Assert.AreEqual("busy:False", Posted().Last());
+    }
+
+    [TestMethod]
+    [DataRow(CopilotAgentMode.Interactive, CopilotPermissionMode.AllowAll)]
+    [DataRow(CopilotAgentMode.Autopilot, CopilotPermissionMode.Manual)]
+    public async Task ModePolicyThatCannotBeReadBlocksPromptsInAllowAllAndAutopilot(CopilotAgentMode agent, CopilotPermissionMode permission)
+    {
+        _defaults = new ChatModes(agent, permission);
+        _policyFails = new InvalidOperationException("managed settings unavailable");
+        await using var chat = Chat();
+
+        Assert.IsFalse(await chat.SendAsync("rm -rf everything", TestContext.CancellationToken));
+
+        Assert.IsEmpty(_sessions.Single().Sent, "An unreadable policy must not be taken as \"nothing is blocked\".");
+        CollectionAssert.Contains(Posted(), "chatError:" + CopilotChat.ModePolicyUnconfirmed);
+        Assert.IsFalse(chat.IsBusy);
+    }
+
+    [TestMethod]
+    [DataRow(CopilotAgentMode.Interactive, CopilotPermissionMode.Manual)]
+    [DataRow(CopilotAgentMode.Interactive, CopilotPermissionMode.Assisted)]
+    [DataRow(CopilotAgentMode.Plan, CopilotPermissionMode.Assisted)]
+    public async Task ManualAndAssistedStillSendWhenSandboxAndPolicyCannotBeConfirmed(CopilotAgentMode agent, CopilotPermissionMode permission)
+    {
+        _defaults = new ChatModes(agent, permission);
+        _sandboxFails = new InvalidOperationException("boom");
+        _policyFails = new InvalidOperationException("managed settings unavailable");
+        await using var chat = Chat();
+
+        Assert.IsTrue(await chat.SendAsync("hi", TestContext.CancellationToken));
+
+        CollectionAssert.AreEqual(new[] { "hi" }, _sessions.Single().Sent);
+        CollectionAssert.DoesNotContain(Posted(), "chatError:" + CopilotChat.SandboxUnconfirmed);
+        CollectionAssert.DoesNotContain(Posted(), "chatError:" + CopilotChat.ModePolicyUnconfirmed);
+    }
+
+    [TestMethod]
+    public async Task RefusedPromptGoesThroughOnceSandboxAndPolicyAreConfirmed()
+    {
+        _defaults = new ChatModes(CopilotAgentMode.Autopilot, CopilotPermissionMode.AllowAll);
+        _sandboxFails = new InvalidOperationException("boom");
+        _policyFails = new InvalidOperationException("managed settings unavailable");
+        await using var chat = Chat();
+        Assert.IsFalse(await chat.SendAsync("hi", TestContext.CancellationToken));
+
+        var session = _sessions.Single();
+        session.SandboxFails = null;
+        Assert.IsFalse(await chat.SendAsync("hi", TestContext.CancellationToken), "The policy is still unreadable.");
+        session.PolicyFails = null;
+        Assert.IsTrue(await chat.SendAsync("hi", TestContext.CancellationToken));
+
+        CollectionAssert.AreEqual(new[] { "hi" }, session.Sent);
+        CollectionAssert.AreEqual(new[] { "on" }, session.SandboxSet);
+    }
+
+    [TestMethod]
+    public async Task PolicyReadBeforeSendingCanStillBlockTheMode()
+    {
+        _defaults = new ChatModes(CopilotAgentMode.Interactive, CopilotPermissionMode.AllowAll);
+        _policyFails = new InvalidOperationException("managed settings unavailable");
+        await using var chat = Chat();
+        Assert.IsFalse(await chat.SendAsync("hi", TestContext.CancellationToken));
+
+        var session = _sessions.Single();
+        session.PolicyFails = null;
+        session.Policy = ModePolicy.None.Block(CopilotPermissionMode.AllowAll, ModePolicy.BlockedByOrganization);
+        Assert.IsFalse(await chat.SendAsync("hi", TestContext.CancellationToken));
+
+        Assert.IsEmpty(session.Sent);
+        Assert.AreEqual("interactive/allowAll blocked:allowAll=" + ModePolicy.BlockedByOrganization, LastModes());
+        CollectionAssert.Contains(Posted(), "chatError:Allow All is not available: " + ModePolicy.BlockedByOrganization);
+    }
+
+    [TestMethod]
+    public async Task SwitchingToAutopilotWithASandboxTheCliCannotSwitchBlocksTheNextPrompt()
+    {
+        await using var chat = Chat();
+        Assert.IsTrue(await chat.SendAsync("one", TestContext.CancellationToken));
+        _sessions[0].Raise(new ChatEvent.Idle(false));
+        _sessions[0].SandboxFails = new InvalidOperationException("boom");
+
+        await chat.SetAgentModeAsync(CopilotAgentMode.Autopilot, TestContext.CancellationToken);
+        Assert.IsFalse(await chat.SendAsync("two", TestContext.CancellationToken));
+
+        CollectionAssert.AreEqual(new[] { "one" }, _sessions[0].Sent);
+        CollectionAssert.Contains(Posted(), "chatError:" + CopilotChat.SandboxUnconfirmed);
+    }
+
     [TestMethod]
     public async Task SandboxChosenBeforeTheFirstMessageAppliesToIt()
     {
@@ -596,6 +707,45 @@ public sealed class CopilotChatTests
         Assert.AreEqual("interactive/manual blocked:allowAll=" + ModePolicy.BlockedByOrganization, LastModes());
         Assert.AreEqual(CopilotPermissionMode.Manual, new ChatStore(_dir).Get("pollux-x")!.PermissionMode);
         CollectionAssert.Contains(Posted(), "chatError:Allow All is not available: " + ModePolicy.BlockedByOrganization + " This Chat continues in Manual.");
+    }
+
+    [TestMethod]
+    public async Task ResumedChatWhoseModeTheCliRefusesWithoutPolicyDoesNotBlameTheOrganization()
+    {
+        new ChatStore(_dir).Save(new ChatRecord { Id = "pollux-x", Title = "t", Created = _now, Modified = _now, PermissionMode = CopilotPermissionMode.Assisted });
+        _cliRefuses.Add(CopilotPermissionMode.Assisted);
+        await using var chat = Chat();
+
+        await chat.OpenAsync("pollux-x", TestContext.CancellationToken);
+
+        Assert.AreEqual("interactive/manual blocked:assisted=" + ModePolicy.RefusedByCli, LastModes());
+        CollectionAssert.Contains(Posted(), "chatError:Assisted is not available: " + ModePolicy.RefusedByCli + " This Chat continues in Manual.");
+    }
+
+    [TestMethod]
+    public async Task SwitchTheCliRefusesWithoutPolicyDoesNotBlameTheOrganization()
+    {
+        _cliRefuses.Add(CopilotPermissionMode.Assisted);
+        await using var chat = Chat();
+        await chat.SendAsync("hi", TestContext.CancellationToken);
+        _sessions[0].Raise(new ChatEvent.Idle(false));
+
+        Assert.IsFalse(await chat.SetPermissionModeAsync(CopilotPermissionMode.Assisted, TestContext.CancellationToken));
+
+        Assert.AreEqual("interactive/manual blocked:assisted=" + ModePolicy.RefusedByCli, LastModes());
+    }
+
+    [TestMethod]
+    public async Task PolicyEnforcementAfterACliRefusalNamesThePolicy()
+    {
+        _cliRefuses.Add(CopilotPermissionMode.Assisted);
+        await using var chat = Chat();
+        await chat.SendAsync("hi", TestContext.CancellationToken);
+        await chat.SetPermissionModeAsync(CopilotPermissionMode.Assisted, TestContext.CancellationToken);
+
+        _sessions[0].Raise(new ChatEvent.PermissionModeBlocked(CopilotPermissionMode.Assisted, "Assisted Permissions are disabled."));
+
+        Assert.AreEqual("interactive/manual blocked:assisted=Assisted Permissions are disabled.", LastModes());
     }
 
     [TestMethod]
@@ -1110,6 +1260,9 @@ public sealed class CopilotChatTests
         /// <summary>What the organization's policy blocks for this session.</summary>
         public ModePolicy Policy { get; set; } = ModePolicy.None;
 
+        /// <summary>Permission Modes the CLI refuses although no policy blocks them (e.g. its judge model is unavailable).</summary>
+        public HashSet<CopilotPermissionMode> CliRefuses { get; set; } = [];
+
         public Task SetAgentModeAsync(CopilotAgentMode mode, CancellationToken cancellationToken)
         {
             ModesSet.Add("agent:" + mode);
@@ -1119,7 +1272,7 @@ public sealed class CopilotChatTests
         public Task<PermissionModeResult> SetPermissionModeAsync(CopilotPermissionMode mode, CancellationToken cancellationToken)
         {
             ModesSet.Add("permission:" + mode);
-            return Task.FromResult(Policy.BlockedReason(mode) is null
+            return Task.FromResult(Policy.BlockedReason(mode) is null && !CliRefuses.Contains(mode)
                 ? new PermissionModeResult(true, mode)
                 : new PermissionModeResult(false, CopilotPermissionMode.Manual));
         }
@@ -1139,7 +1292,10 @@ public sealed class CopilotChatTests
             return Task.CompletedTask;
         }
 
-        public Task<ModePolicy> GetModePolicyAsync(CancellationToken cancellationToken) => Task.FromResult(Policy);
+        public Exception? PolicyFails { get; set; }
+
+        public Task<ModePolicy> GetModePolicyAsync(CancellationToken cancellationToken) =>
+            PolicyFails is { } ex ? Task.FromException<ModePolicy>(ex) : Task.FromResult(Policy);
 
         public Task<IReadOnlyList<ChatTurn>> GetHistoryAsync(CancellationToken cancellationToken) => Task.FromResult(History);
 

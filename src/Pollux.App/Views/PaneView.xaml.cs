@@ -3,12 +3,15 @@ using Microsoft.UI.Input;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Pollux.App.Services;
 using Pollux.App.ViewModels;
+using Pollux.Core.Compare;
 using Pollux.Core.Files;
+using Pollux.Core.Git;
 using Pollux.Core.Navigation;
 using Pollux.Core.Session;
 using Pollux.Core.Settings;
@@ -26,6 +29,11 @@ public sealed partial class PaneView : UserControl
     private IPaneHost _host = null!;
     private CancellationTokenSource? _loadCts;
     private List<FileEntry> _entries = [];
+    private CancellationTokenSource? _sizesCts;
+    private Dictionary<string, long> _folderSizes = new(StringComparer.OrdinalIgnoreCase);
+    private string? _sizesLocation;
+    private bool _sizesWanted;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _sizesTimer;
     private List<FileItem> _visible = [];
     private FileSystemWatcher? _watcher;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _reloadTimer;
@@ -33,6 +41,11 @@ public sealed partial class PaneView : UserControl
     private bool _isActive;
     private string? _error;
     private FolderGit? _git;
+    /// <summary>The git gate's last verdict and the location it was made for.</summary>
+    private (string Location, GitGateResult Result)? _gitVerdict;
+    private ViewMode _shownMode = ViewMode.Details;
+    private FolderComparison? _comparison;
+    private CompareSide _compareSide;
 
     public PaneView()
     {
@@ -85,8 +98,8 @@ public sealed partial class PaneView : UserControl
     /// <summary>This Pane's Tabs; change them through EditTabs so the Pane shows the result.</summary>
     internal PaneTabs PaneTabs => _tabs;
 
-    /// <summary>The folder shown, or null on Home.</summary>
-    internal string? Folder => Tab.IsHome ? null : Tab.Location;
+    /// <summary>The folder shown, or null on Home and in the Recycle Bin.</summary>
+    internal string? Folder => Tab.Folder;
 
     internal IReadOnlyList<FileItem> VisibleItems => _visible;
     internal int TotalCount => _entries.Count;
@@ -115,6 +128,9 @@ public sealed partial class PaneView : UserControl
     internal void Shutdown()
     {
         _loadCts?.Cancel();
+        _searchCts?.Cancel();
+        _sizesCts?.Cancel();
+        _sizesTimer?.Stop();
         _reloadTimer?.Stop();
         StopWatching();
     }
@@ -209,8 +225,8 @@ public sealed partial class PaneView : UserControl
             var index = i;
             var on = i == ActiveTabIndex;
             var title = new TextBlock { Text = Tabs[i].Title, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 150 };
-            var icon = Tabs[i].IsHome
-                ? (FrameworkElement)new TextBlock { Text = "⌂", FontSize = 12, VerticalAlignment = VerticalAlignment.Center }
+            var icon = Tabs[i].IsHome || Tabs[i].IsRecycleBin
+                ? (FrameworkElement)new TextBlock { Text = Tabs[i].IsHome ? "⌂" : "♻", FontSize = 12, VerticalAlignment = VerticalAlignment.Center }
                 : new Border { Width = 14, Height = 10, CornerRadius = new CornerRadius(2, 3, 2, 2), Background = Res("PolluxFolderBrush"), VerticalAlignment = VerticalAlignment.Center };
             var close = new Button
             {
@@ -238,7 +254,7 @@ public sealed partial class PaneView : UserControl
                 BorderThickness = new Thickness(0, 0, 0, 2),
                 Opacity = on ? 1 : 0.7,
             };
-            ToolTipService.SetToolTip(tab, Tabs[i].IsHome ? "Home" : Tabs[i].Location);
+            ToolTipService.SetToolTip(tab, Tabs[i].Folder ?? Tabs[i].Title);
             tab.CanDrag = true;
             tab.AllowDrop = true;
             tab.DragStarting += (_, e) =>
@@ -355,11 +371,16 @@ public sealed partial class PaneView : UserControl
         _ = ShowCurrentAsync();
     }
 
-    internal void Refresh() => _ = ShowCurrentAsync(keepSelection: true);
+    internal void Refresh()
+    {
+        if (_searchHits is not null) RefreshSearch();
+        else _ = ShowCurrentAsync(keepSelection: true);
+    }
 
     private void RememberSelection()
     {
-        if (Tab.IsHome) return;
+        // Search results are not entries of the Tab's folder.
+        if (Tab.IsHome || _searchHits is not null) return;
         Tab.SelectedNames = SelectedItems.Select(i => i.Entry.Name).ToList();
     }
 
@@ -371,7 +392,7 @@ public sealed partial class PaneView : UserControl
     /// <summary>Selects exactly the visible entries with these names (Copilot's Pollux tools); returns how many were selected.</summary>
     internal int SelectNames(IReadOnlyList<string> names)
     {
-        if (Tab.IsHome) return 0;
+        if (Tab.IsHome || _searchHits is not null) return 0;
         Tab.SelectedNames = [.. names];
         Tab.FocusName = null;
         Present(Tab);
@@ -383,9 +404,18 @@ public sealed partial class PaneView : UserControl
     private async Task ShowCurrentCoreAsync(bool keepSelection)
     {
         _loadCts?.Cancel();
+        _sizesCts?.Cancel();
         var cts = _loadCts = new CancellationTokenSource();
         var tab = Tab;
+        if (tab.Location != _sizesLocation)
+        {
+            _folderSizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            _sizesLocation = tab.Location;
+            _sizesWanted = false;
+        }
+
         if (keepSelection) RememberSelection();
+        EndSearch();
         RenderCrumbs();
         ApplyFilterBar();
         _error = null;
@@ -398,7 +428,15 @@ public sealed partial class PaneView : UserControl
             HomeHost.Visibility = Visibility.Visible;
             LoadingBar.Visibility = Visibility.Collapsed;
             InfoText.Text = "";
+            TrustButton.Visibility = Visibility.Collapsed;
             RenderHome();
+            ListingChanged?.Invoke();
+            return;
+        }
+
+        if (tab.IsRecycleBin)
+        {
+            await ShowRecycleBinAsync(tab, cts.Token);
             return;
         }
 
@@ -459,24 +497,97 @@ public sealed partial class PaneView : UserControl
         CrashLog.Trace($"folder {tab.Location}: all {all.Count} rows after {stopwatch.ElapsedMilliseconds} ms");
         Watch(tab.Location);
         _ = LoadGitStatusAsync(tab, cts.Token);
+        if (_sizesWanted || (Settings.Files.AutoFolderSizes && IsLocalDrive(tab.Location))) StartFolderSizes(tab, recomputeAll: false);
+        ListingChanged?.Invoke();
+    }
+
+    /// <summary>Raised when the folder was read from disk again (or the Pane went Home); not when only the presentation changed.</summary>
+    internal event Action? ListingChanged;
+
+    /// <summary>Marks every row by how it compares to the other Pane's folder (<paramref name="side"/> is this Pane's side); null clears the marks.</summary>
+    internal void SetCompare(FolderComparison? comparison, CompareSide side)
+    {
+        if (_comparison is null && comparison is null) return;
+        _comparison = comparison;
+        _compareSide = side;
+        if (Tab.IsHome) return;
+        // The rows stay as they are: only their marks change, so scroll position, caret and selection are not touched.
+        var compared = ComparedNow(Tab);
+        foreach (var item in _visible) item.SetCompare(compared?.MarkFor(_compareSide, item.Entry.Name) ?? CompareMark.None, _compareSide);
+    }
+
+    private FolderComparison? ComparedNow(TabModel tab) =>
+        _comparison is { } c && string.Equals(tab.Location, c.FolderOf(_compareSide), StringComparison.OrdinalIgnoreCase) ? c : null;
+
+    /// <summary>Lists the Recycle Bin through the shell: it spans all drives, so there is no folder to read, watch or git-check.</summary>
+    private async Task ShowRecycleBinAsync(TabModel tab, CancellationToken ct)
+    {
+        StopWatching();
+        HomeHost.Visibility = Visibility.Collapsed;
+        ListHost.Visibility = Visibility.Visible;
+        LoadingBar.Visibility = Visibility.Visible;
+        List<FileEntry> entries;
+        try
+        {
+            entries = [.. (await Interop.RecycleBin.ListAsync()).Select(i => i.ToEntry())];
+        }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidCastException or IOException or UnauthorizedAccessException)
+        {
+            entries = [];
+            _error = ex.Message;
+        }
+
+        if (ct.IsCancellationRequested) return;
+        LoadingBar.Visibility = Visibility.Collapsed;
+        _entries = entries;
+        Present(tab);
     }
 
     /// <summary>Shows the rows <see cref="FolderProjection"/> picks for the Tab and restores its selection.</summary>
     private void Present(TabModel tab)
     {
-        var s = Settings.Files;
-        var listing = FolderProjection.Project(_entries, tab.Location, Settings, tab.Filter, _git, tab.SelectedNames, tab.FocusName);
-        tab.FocusName = null;
-        var items = listing.Rows.Select(r => new FileItem(r.Entry, s.DateFormat, s.ShowExtensions) { Highlights = r.Highlights, Git = r.Git }).ToList();
+        if (_searchHits is not null)
+        {
+            PresentSearch();
+            return;
+        }
 
+        var s = Settings.Files;
+        var listing = FolderProjection.Project(_entries, tab.Location, Settings, tab.Filter, _git, tab.SelectedNames, tab.FocusName, folderSizes: _folderSizes);
+        tab.FocusName = null;
+        var columns = ListColumns.Parse(s.Columns);
+        var compared = ComparedNow(tab);
+        var items = listing.Rows.Select(r => new FileItem(r.Entry, s.DateFormat, s.ShowExtensions, columns, folderSizeKnown: _folderSizes.ContainsKey(r.Entry.FullPath))
+        {
+            Highlights = r.Highlights,
+            Git = r.Git,
+            CompareState = compared?.MarkFor(_compareSide, r.Entry.Name) ?? CompareMark.None,
+            CompareFrom = _compareSide,
+        }).ToList();
+
+        ShowViewMode(ViewModes.Effective(tab.ViewMode, s.ViewMode));
         _visible = items;
-        List.ItemsSource = items;
+        if (listing.Groups is { Count: > 0 } groups && _shownMode == ViewMode.Details)
+        {
+            // Rows are already in group order, so indices into _visible stay valid.
+            var source = new CollectionViewSource
+            {
+                IsSourceGrouped = true,
+                Source = groups.Select(g => new FileGroup(g.Title, items.GetRange(g.Start, g.Count))).ToList(),
+            };
+            List.ItemsSource = source.View;
+        }
+        else
+        {
+            List.ItemsSource = items;
+        }
+
         UpdateSortHeader();
 
         EmptyText.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        EmptyText.Text = _error ?? (string.IsNullOrEmpty(tab.Filter) ? "empty folder" : "no matches");
+        EmptyText.Text = _error ?? (string.IsNullOrEmpty(tab.Filter) ? (tab.IsRecycleBin ? "Recycle Bin is empty" : "empty folder") : "no matches");
         FilterCount.Text = $"{items.Count}/{_entries.Count}";
-        InfoText.Text = GitInfo.BranchFor(tab.Location) is { } branch ? "⎇ " + branch : "";
+        PresentGitInfo(tab);
 
         foreach (var i in listing.Selected) List.SelectedItems.Add(items[i]);
         if (listing.Selected.Count > 0) List.ScrollIntoView(items[listing.Selected[0]]);
@@ -487,20 +598,208 @@ public sealed partial class PaneView : UserControl
 
     private void FocusListSoon() => DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, FocusList);
 
+    /// <summary>Computes the sizes of the folders in the listing in the background (View: Calculate Folder Sizes).</summary>
+    internal void CalculateFolderSizes()
+    {
+        if (!Tab.IsHome) StartFolderSizes(Tab, recomputeAll: true);
+    }
+
+    private static bool IsLocalDrive(string path)
+    {
+        try
+        {
+            var root = Path.GetPathRoot(path);
+            if (string.IsNullOrEmpty(root) || root.StartsWith(@"\\", StringComparison.Ordinal)) return false;
+            return new DriveInfo(root).DriveType is DriveType.Fixed or DriveType.Removable;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private void StartFolderSizes(TabModel tab, bool recomputeAll)
+    {
+        _sizesCts?.Cancel();
+        var cts = _sizesCts = new CancellationTokenSource();
+        _sizesWanted = true;
+        var folders = _entries
+            .Where(e => e.IsDirectory && !e.Attributes.HasFlag(System.IO.FileAttributes.ReparsePoint) && (recomputeAll || !_folderSizes.ContainsKey(e.FullPath)))
+            .Select(e => e.FullPath)
+            .ToList();
+        if (folders.Count == 0) return;
+
+        _ = Task.Run(() => FolderSizer.MeasureAllAsync(folders, (path, size) =>
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (cts.IsCancellationRequested || tab != Tab) return;
+                _folderSizes[path] = size;
+                ScheduleSizesPresent(tab);
+            });
+        }, cts.Token)).ContinueWith(_ => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (cts.IsCancellationRequested || tab != Tab) return;
+            // All measured: the one time a list sorted by size is put in order again.
+            _sizesTimer?.Stop();
+            ShowFolderSizes(final: true);
+        }), TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Shows the sizes measured so far in the rows that are there, without building the list again (that would throw
+    /// away the scroll position, the caret and the selection anchor while the user works). Only a list sorted by size
+    /// has to be put in order again, and only when everything is measured.
+    /// </summary>
+    private void ShowFolderSizes(bool final)
+    {
+        if (Tab.IsHome) return;
+        foreach (var item in _visible)
+        {
+            if (item.IsDirectory && _folderSizes.TryGetValue(item.Path, out var size)) item.SetFolderSize(size);
+        }
+
+        if (final && Settings.Files.SortBy == SortColumn.Size)
+        {
+            RememberSelection();
+            Present(Tab);
+        }
+    }
+
+    private void ScheduleSizesPresent(TabModel tab)
+    {
+        if (_sizesTimer is null)
+        {
+            _sizesTimer = DispatcherQueue.CreateTimer();
+            _sizesTimer.Interval = TimeSpan.FromMilliseconds(300);
+            _sizesTimer.IsRepeating = false;
+            _sizesTimer.Tick += (_, _) => ShowFolderSizes(final: false);
+        }
+
+        if (!_sizesTimer.IsRunning) _sizesTimer.Start();
+    }
+
+    /// <summary>
+    /// The path bar's git part: the branch, a hint when the config scan refused git status, and "Trust this folder" in
+    /// an untrusted repository. The branch is read on every presentation; hint and action come from the last verdict
+    /// of the git gate for this location (<see cref="LoadGitStatusAsync"/>).
+    /// </summary>
+    private void PresentGitInfo(TabModel tab)
+    {
+        var branch = tab.Folder is { } folder ? GitInfo.BranchFor(folder) : null;
+        var verdict = _gitVerdict is { } v && v.Location == tab.Location ? v.Result : null;
+        var text = branch is null ? "" : "⎇ " + branch;
+        if (verdict?.RefusedConfigKey is { } key)
+        {
+            text += (text.Length > 0 ? " · " : "") + GitConfigScan.ShortHint;
+            ToolTipService.SetToolTip(InfoText, GitConfigScan.Hint(key));
+        }
+        else
+        {
+            ToolTipService.SetToolTip(InfoText, null);
+        }
+
+        InfoText.Text = text;
+        TrustButton.Visibility = verdict is { CanTrust: true } && Settings.Files.GitStatus ? Visibility.Visible : Visibility.Collapsed;
+        ToolTipService.SetToolTip(TrustButton, verdict?.RepoRoot is { } root ? $"Add {root} to Trusted Folders so git status runs here" : null);
+    }
+
+    private void TrustButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_gitVerdict is not { Result.RepoRoot: { } root } v || v.Location != Tab.Location) return;
+        // The repository root, not the browsed subfolder; network locations are refused by the gate (S-01).
+        if (GitGate.AddTrustedFolder(Settings.Files.TrustedFolders, root) is not { } trusted) return;
+        Settings.Files.TrustedFolders = trusted;
+        _host.Services.SaveSettings(); // SettingsChanged → ApplySettings asks the gate again, so letters appear
+    }
+
     private async Task LoadGitStatusAsync(TabModel tab, CancellationToken ct)
     {
-        var root = Settings.Files.GitStatus ? GitInfo.RootFor(tab.Location) : null;
-        if (root is null)
+        // The git gate decides (ADR 0006): git status only runs in Trusted Folders, never for network gitdirs.
+        var gate = GitInfo.Gate(Settings);
+        var location = tab.Location;
+        var verdict = await Task.Run(() => gate.Evaluate(location));
+        if (ct.IsCancellationRequested || tab != Tab) return;
+        var changedHint = _gitVerdict?.Location != location || _gitVerdict?.Result != verdict;
+        _gitVerdict = (location, verdict);
+        if (verdict is not { Mode: GitGateMode.RunStatus, RepoRoot: { } root })
         {
             if (_git is not null) { _git = null; RememberSelection(); Present(tab); }
+            else if (changedHint) PresentGitInfo(tab);
             return;
         }
 
-        var status = await GitInfo.StatusAsync(root, ct);
+        var status = await GitInfo.StatusAsync(verdict, ct);
         if (ct.IsCancellationRequested || status is null || tab != Tab) return;
         _git = new FolderGit(status, root);
         RememberSelection();
         Present(tab);
+    }
+
+    // ---------------- view mode ----------------
+
+    /// <summary>The view mode of the active Tab: its own, or the files.viewMode setting.</summary>
+    internal ViewMode ViewMode => ViewModes.Effective(Tab.ViewMode, Settings.Files.ViewMode);
+
+    /// <summary>Gives the active Tab its own view mode (kept in the session) and shows it, keeping the selection.</summary>
+    internal void SetViewMode(ViewMode mode)
+    {
+        RememberSelection();
+        Tab.ViewMode = mode;
+        if (!Tab.IsHome) Present(Tab);
+    }
+
+    /// <summary>The ListView of the shown view mode; every list operation goes through it.</summary>
+    private ListView List => ListFor(_shownMode);
+
+    private ListView ListFor(ViewMode mode) => mode switch
+    {
+        ViewMode.Tiles => TilesList,
+        ViewMode.Icons => IconsList,
+        _ => DetailsList,
+    };
+
+    /// <summary>
+    /// Shows the ListView of a view mode and empties the one shown before. Each mode has its own ListView with fixed
+    /// template, container style and panel, so switching never swaps them on a live ListView.
+    /// </summary>
+    private void ShowViewMode(ViewMode mode)
+    {
+        if (mode == _shownMode) return;
+        var old = List;
+        var hadFocus = FocusManager.GetFocusedElement(XamlRoot) is DependencyObject f && IsWithin(f, old);
+        old.ItemsSource = null;
+        old.Visibility = Visibility.Collapsed;
+        _shownMode = mode;
+        List.Visibility = Visibility.Visible;
+        Header.Visibility = mode == ViewMode.Details ? Visibility.Visible : Visibility.Collapsed;
+        if (hadFocus) FocusListSoon();
+    }
+
+    private static bool IsWithin(DependencyObject d, DependencyObject root)
+    {
+        for (var e = d; e is not null; e = VisualTreeHelper.GetParent(e)) if (e == root) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Tiles and Large Icons: the shell thumbnail over the folder/badge fallback. Asked for when a container is
+    /// realized, so only entries on (or near) the screen load; cached thumbnails show at once.
+    /// </summary>
+    private void ShowThumbnail(ContentControl container, Grid root, FileItem item)
+    {
+        if (root.Children[0] is not Grid icon || icon.Children[0] is not UIElement fallback || icon.Children[1] is not Image image) return;
+        // A mapped network drive (Z:\) looks local, but reading a file's content over SMB can hang the shared thumbnail thread.
+        var onNetworkDrive = Drives.For(item.Path)?.Type == DriveType.Network;
+        var key = ThumbnailKey.For(item.Entry, ViewModes.ThumbnailPixels(_shownMode, XamlRoot?.RasterizationScale ?? 1), onNetworkDrive);
+        var cached = Thumbnails.Get(key, DispatcherQueue, loaded =>
+        {
+            if (!ReferenceEquals(container.Content, item)) return; // the container was recycled for another entry
+            image.Source = loaded;
+            fallback.Visibility = Visibility.Collapsed;
+        });
+        image.Source = cached;
+        fallback.Visibility = cached is null ? Visibility.Visible : Visibility.Collapsed;
     }
 
     internal void SelectByName(string name)
@@ -514,9 +813,37 @@ public sealed partial class PaneView : UserControl
         var s = Settings.Files;
         var arrow = s.SortDescending ? " ↓" : " ↑";
         SortName.Content = "Name" + (s.SortBy == SortColumn.Name ? arrow : "");
-        SortModified.Content = "Modified" + (s.SortBy == SortColumn.Modified ? arrow : "");
+        SortModified.Content = (Tab.IsRecycleBin ? "Deleted" : "Modified") + (s.SortBy == SortColumn.Modified ? arrow : "");
         SortType.Content = "Type" + (s.SortBy == SortColumn.Type ? arrow : "");
         SortSize.Content = "Size" + (s.SortBy == SortColumn.Size ? arrow : "");
+        var columns = ListColumns.Parse(s.Columns);
+        SortCreated.Content = "Created" + (s.SortBy == SortColumn.Created ? arrow : "");
+        SortAttributes.Content = "Attr" + (s.SortBy == SortColumn.Attributes ? arrow : "");
+        SortExtension.Content = "Ext" + (s.SortBy == SortColumn.Extension ? arrow : "");
+        SortCreated.Visibility = columns.HasFlag(OptionalColumns.Created) ? Visibility.Visible : Visibility.Collapsed;
+        SortAttributes.Visibility = columns.HasFlag(OptionalColumns.Attributes) ? Visibility.Visible : Visibility.Collapsed;
+        SortExtension.Visibility = columns.HasFlag(OptionalColumns.Extension) ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>Right-click on the column header: toggle the optional columns.</summary>
+    private void Header_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        var shown = ListColumns.Parse(Settings.Files.Columns);
+        var menu = new MenuFlyout();
+        foreach (var c in ListColumns.All)
+        {
+            var column = c;
+            var item = new ToggleMenuFlyoutItem { Text = ListColumns.Title(column), IsChecked = shown.HasFlag(column) };
+            item.Click += (_, _) =>
+            {
+                Settings.Files.Columns = ListColumns.Toggle(Settings.Files.Columns, column);
+                _host.Services.SaveSettings();
+            };
+            menu.Items.Add(item);
+        }
+
+        menu.ShowAt(Header, e.GetPosition(Header));
+        e.Handled = true;
     }
 
     private void Sort_Click(object sender, RoutedEventArgs e)
@@ -546,6 +873,8 @@ public sealed partial class PaneView : UserControl
         {
             RememberSelection();
             Present(Tab);
+            // Trusted Folders or the git-status switch may have changed: ask the git gate again.
+            if (_loadCts is { IsCancellationRequested: false } cts) _ = LoadGitStatusAsync(Tab, cts.Token);
         }
         else
         {
@@ -608,6 +937,12 @@ public sealed partial class PaneView : UserControl
             return;
         }
 
+        if (Tab.IsRecycleBin)
+        {
+            Crumbs.Children.Add(Crumb("♻ Recycle Bin", WinPath.RecycleBin));
+            return;
+        }
+
         var segments = WinPath.Segments(Tab.Location);
         for (var i = 0; i < segments.Count; i++)
         {
@@ -649,7 +984,7 @@ public sealed partial class PaneView : UserControl
         _host.OnPaneActivated(this);
         CrumbHost.Visibility = Visibility.Collapsed;
         PathBox.Visibility = Visibility.Visible;
-        PathBox.Text = Tab.IsHome ? "" : Tab.Location;
+        PathBox.Text = Tab.Folder ?? "";
         PathBox.Focus(FocusState.Keyboard);
         PathBox.SelectAll();
     }
@@ -661,6 +996,13 @@ public sealed partial class PaneView : UserControl
             e.Handled = true;
             var text = PathBox.Text.Trim();
             if (text.Length == 0) { RenderCrumbs(); FocusList(); return; }
+            if (WinPath.WellKnown(text) is { } known)
+            {
+                Navigate(known);
+                FocusList();
+                return;
+            }
+
             var target = WinPath.Resolve(text, Folder ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), Environment.GetEnvironmentVariable);
             if (Directory.Exists(target) || File.Exists(target))
             {
@@ -696,6 +1038,7 @@ public sealed partial class PaneView : UserControl
     internal void ShowFilter()
     {
         if (Tab.IsHome) return;
+        if (IsSearchActive) CloseSearch();
         Tab.Filter ??= "";
         ApplyFilterBar();
         FilterBox.Focus(FocusState.Keyboard);
@@ -760,6 +1103,7 @@ public sealed partial class PaneView : UserControl
 
     internal void OpenSelected()
     {
+        if (Tab.IsRecycleBin) return; // recycled entries are only restored or deleted, never opened
         var sel = SelectedItems;
         if (sel.Count == 1) Open(sel[0]);
         else foreach (var f in sel.Where(i => !i.IsDirectory)) Shell.Open(f.Path);
@@ -767,11 +1111,33 @@ public sealed partial class PaneView : UserControl
 
     private void Open(FileItem item)
     {
+        if (Tab.IsRecycleBin) return;
         if (item.IsDirectory) Navigate(item.Path);
         else Shell.Open(item.Path);
     }
 
     internal void SelectAll() => List.SelectAll();
+
+    internal void SelectNone() => List.SelectedItems.Clear();
+
+    internal void InvertSelection()
+    {
+        var inverted = _visible.Where(i => !List.SelectedItems.Contains(i)).ToList();
+        List.SelectedItems.Clear();
+        foreach (var item in inverted) List.SelectedItems.Add(item);
+    }
+
+    /// <summary>Selects (or deselects) the visible entries whose names match the wildcard <paramref name="patterns"/>.</summary>
+    internal void SelectByPattern(string patterns, bool select)
+    {
+        var names = _visible.Select(i => i.Entry.Name).ToList();
+        foreach (var index in WildcardMatcher.Indexes(names, patterns))
+        {
+            var item = _visible[index];
+            if (select && !List.SelectedItems.Contains(item)) List.SelectedItems.Add(item);
+            else if (!select) List.SelectedItems.Remove(item);
+        }
+    }
 
     internal void MoveSelection(int delta)
     {
@@ -797,6 +1163,12 @@ public sealed partial class PaneView : UserControl
     {
         if (args.InRecycleQueue || args.Item is not FileItem item) return;
         if (args.ItemContainer.ContentTemplateRoot is not Grid root) return;
+        if (_shownMode != ViewMode.Details)
+        {
+            ShowThumbnail(args.ItemContainer, root, item);
+            return;
+        }
+
         if (root.Children[0] is not StackPanel sp || sp.Children[1] is not TextBlock name) return;
         name.TextHighlighters.Clear();
         if (item.Highlights.Count == 0) return;
@@ -819,14 +1191,14 @@ public sealed partial class PaneView : UserControl
         }
 
         // Shift+right-click goes straight to the full Windows menu, like Explorer's "Show more options".
-        if (KeyInput.IsDown(VirtualKey.Shift) && SelectedItems.Count > 0)
+        if (KeyInput.IsDown(VirtualKey.Shift) && SelectedItems.Count > 0 && !Tab.IsRecycleBin)
         {
             _host.Execute("file.shellMenu");
             e.Handled = true;
             return;
         }
 
-        var menu = ContextMenus.ForSelection(_host, SelectedItems, Folder);
+        var menu = Tab.IsRecycleBin ? ContextMenus.ForRecycleBin(_host, SelectedItems) : ContextMenus.ForSelection(_host, SelectedItems, Folder, HasSearchResults);
         menu.ShowAt(List, e.GetPosition(List));
         e.Handled = true;
     }
@@ -837,7 +1209,8 @@ public sealed partial class PaneView : UserControl
     {
         var paths = e.Items.OfType<FileItem>().Select(i => i.Path).ToList();
         CrashLog.Trace($"drag start pane {Index}: {paths.Count} items");
-        if (paths.Count == 0) { e.Cancel = true; return; }
+        // Recycled entries leave the bin only through Restore.
+        if (paths.Count == 0 || Tab.IsRecycleBin) { e.Cancel = true; return; }
         e.Data.RequestedOperation = DataPackageOperation.Copy | DataPackageOperation.Move;
         e.Data.Properties.Add("PolluxSourceFolder", Folder ?? "");
         e.Data.SetDataProvider(StandardDataFormats.StorageItems, async request =>

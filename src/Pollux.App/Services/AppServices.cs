@@ -36,6 +36,33 @@ internal sealed class AppServices
         Recent = JsonFile.Load(RecentFile, StateJson.Default.RecentList);
         Session = JsonFile.Load(SessionFile, StateJson.Default.SessionState);
         Workspaces = new Core.Workspaces.WorkspaceStore(Path.Combine(Paths.ConfigDirectory, "workspaces"));
+        SeedTrustedFolders();
+    }
+
+    /// <summary>
+    /// First start after the update: Bookmarks that are or contain repositories become Trusted Folders once (ADR 0006),
+    /// never Downloads, Desktop, Temp or network locations. Skipped while settings.json has an error, so a broken file
+    /// is not overwritten with defaults.
+    /// </summary>
+    private void SeedTrustedFolders()
+    {
+        if (SettingsError is not null) return;
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string[] neverTrust =
+        [
+            Path.Combine(profile, "Downloads"),
+            Path.Combine(profile, "Desktop"),
+            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+            Path.GetTempPath(),
+            Environment.GetEnvironmentVariable("TEMP") ?? "",
+            Environment.GetEnvironmentVariable("TMP") ?? "",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Temp"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Temp"),
+        ];
+        if (!Core.Git.TrustedFolderSeeding.RunOnce(Settings, Bookmarks.Flat.Select(b => b.Path), neverTrust)) return;
+        try { SettingsStore.Save(SettingsFile, Settings); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     public PolluxPaths Paths { get; }

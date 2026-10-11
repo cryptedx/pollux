@@ -10,19 +10,16 @@ public static class CopilotSignIn
     public const string LoginArguments = "login";
 
     /// <summary>
-    /// The command line for a <c>cmd.exe /k</c> terminal, or null when there is no CLI to run. The bundled
+    /// The CLI to run <see cref="LoginArguments"/> with, or null when there is none. The bundled
     /// <c>copilot-runtime</c> wrapper has an interactive sibling named <c>copilot</c>; it is preferred when present.
+    /// The launch plan turns the path into a terminal command line.
     /// </summary>
-    public static string? TerminalCommandLine(CopilotCli cli, Func<string, bool> fileExists)
+    public static string? CliPath(CopilotCli cli, Func<string, bool> fileExists) => cli switch
     {
-        var path = cli switch
-        {
-            CopilotCli.Bundled b => InteractiveSibling(b.Path, fileExists),
-            CopilotCli.Configured c => c.Path,
-            _ => null,
-        };
-        return path is null ? null : $"/k \"\"{path}\" {LoginArguments}\"";
-    }
+        CopilotCli.Bundled b => InteractiveSibling(b.Path, fileExists),
+        CopilotCli.Configured c => c.Path,
+        _ => null,
+    };
 
     private static string InteractiveSibling(string wrapperPath, Func<string, bool> fileExists)
     {

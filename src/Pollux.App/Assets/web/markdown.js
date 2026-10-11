@@ -11,7 +11,8 @@
     s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => '<a data-href="' + url + '">' + label + '</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
-    return s.replace(/\u0000(\d+)\u0000/g, (_, i) => '<code>' + esc(codes[+i]) + '</code>');
+    // Placeholders are only ever ones made above: render() strips NUL from the input. A missing index renders empty.
+    return s.replace(/\u0000(\d+)\u0000/g, (_, i) => i in codes ? '<code>' + esc(codes[+i]) + '</code>' : '');
   }
 
   // Small syntax highlighter for fenced code: diffs by line; other languages by token (comments, strings, numbers,
@@ -49,7 +50,9 @@
   }
 
   function render(md) {
-    const lines = String(md).replace(/\r\n?/g, '\n').split('\n');
+    // NUL never belongs in Chat text and is the inline-code placeholder delimiter: drop it so the model's output
+    // cannot forge placeholders (S-16).
+    const lines = String(md).replace(/\u0000/g, '').replace(/\r\n?/g, '\n').split('\n');
     const out = [];
     let i = 0;
     while (i < lines.length) {

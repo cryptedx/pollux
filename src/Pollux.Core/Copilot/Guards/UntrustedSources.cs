@@ -6,7 +6,12 @@ namespace Pollux.Core.Copilot.Guards;
 /// </summary>
 public sealed class UntrustedSources
 {
-    /// <summary>Downloads, the Inbox (the Desktop), Temp folders, the browser/Outlook download cache and archives.</summary>
+    /// <summary>
+    /// Downloads, the Inbox (the Desktop), Temp folders, the browser/Outlook download cache, the OneDrive folders
+    /// (personal and business: others can share or sync files into them) and archives. Network locations (UNC paths,
+    /// mapped network drives) and further cloud-sync roots (SharePoint libraries) are recognised by the Guard Rules
+    /// themselves (<see cref="IRemotePlaces"/>).
+    /// </summary>
     public static IReadOnlyList<string> Defaults { get; } =
     [
         @"~\Downloads",
@@ -15,6 +20,9 @@ public sealed class UntrustedSources
         @"%LOCALAPPDATA%\Temp",
         @"%SystemRoot%\Temp",
         @"%LOCALAPPDATA%\Microsoft\Windows\INetCache",
+        @"%OneDrive%\",
+        @"%OneDriveCommercial%\",
+        @"%OneDriveConsumer%\",
         "*.zip",
         "*.7z",
         "*.rar",

@@ -211,6 +211,7 @@ public sealed class TransferTests
         File.SetUnixFileMode(locked, UnixFileMode.None);
         try
         {
+            if (CanList(locked)) Assert.Inconclusive("Running with rights that ignore folder permissions (root in a CI container).");
             var job = await Run(TransferKind.Copy, [Path.Combine(Src, "folder")], Dst, ConflictPolicy.Skip);
 
             Assert.AreEqual(TransferState.Completed, job.State);
@@ -231,5 +232,81 @@ public sealed class TransferTests
         Assert.AreEqual(TransferState.Completed, job.State);
         Assert.AreEqual(1, job.Errors.Count);
         Assert.IsTrue(File.Exists(Path.Combine(Dst, "a.txt")));
+    }
+
+    private const string InternetZone = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://example.invalid/a.txt\r\n";
+
+    [TestMethod]
+    public async Task CopyKeepsTheInternetZoneMark()
+    {
+        // S-10: a downloaded file copied by Pollux's engine must keep its Mark-of-the-Web.
+        if (!OperatingSystem.IsWindows()) Assert.Inconclusive("Zone streams exist only on Windows (NTFS).");
+        var src = Path.Combine(Src, "a.txt");
+        if (!ZoneMark.Write(src, InternetZone)) Assert.Inconclusive("The temp folder does not support alternate data streams.");
+
+        var job = await Run(TransferKind.Copy, [src], Dst);
+
+        Assert.AreEqual(TransferState.Completed, job.State);
+        Assert.AreEqual(InternetZone, ZoneMark.Read(Path.Combine(Dst, "a.txt")));
+    }
+
+    [TestMethod]
+    public async Task OverwriteKeepsTheSourceZoneMark()
+    {
+        // S-10: replacing an existing file must carry the source's mark onto the replacement.
+        if (!OperatingSystem.IsWindows()) Assert.Inconclusive("Zone streams exist only on Windows (NTFS).");
+        var src = Path.Combine(Src, "a.txt");
+        if (!ZoneMark.Write(src, InternetZone)) Assert.Inconclusive("The temp folder does not support alternate data streams.");
+        File.SetAttributes(src, FileAttributes.ReadOnly);
+        File.WriteAllText(Path.Combine(Dst, "a.txt"), "old");
+
+        var job = await Run(TransferKind.Copy, [src], Dst, ConflictPolicy.Overwrite);
+
+        File.SetAttributes(src, FileAttributes.Normal);
+        File.SetAttributes(Path.Combine(Dst, "a.txt"), FileAttributes.Normal);
+        Assert.AreEqual(TransferState.Completed, job.State);
+        Assert.AreEqual("aaa", File.ReadAllText(Path.Combine(Dst, "a.txt")));
+        Assert.AreEqual(InternetZone, ZoneMark.Read(Path.Combine(Dst, "a.txt")));
+    }
+
+    [TestMethod]
+    public async Task UnmarkedSourceStaysUnmarked()
+    {
+        var job = await Run(TransferKind.Copy, [Path.Combine(Src, "a.txt")], Dst);
+
+        Assert.AreEqual(TransferState.Completed, job.State);
+        Assert.IsNull(ZoneMark.Read(Path.Combine(Dst, "a.txt")));
+    }
+
+    [TestMethod]
+    public void ZoneMarkIsANoOpOffWindows()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Inconclusive("Covers non-Windows behaviour only.");
+        var file = Path.Combine(Src, "a.txt");
+
+        Assert.IsFalse(ZoneMark.Write(file, InternetZone));
+        Assert.IsNull(ZoneMark.Read(file));
+        Assert.AreEqual(1, Directory.GetFiles(Src).Length, "no stray 'a.txt:Zone.Identifier' file may appear");
+    }
+
+    [TestMethod]
+    public void EncryptedSourceIsCopiedThroughTheWindowsCopyApi()
+    {
+        // S-10: a streamed copy of an EFS file would produce a plaintext duplicate.
+        Assert.IsTrue(TransferRunner.UsesWindowsCopy(FileAttributes.Encrypted | FileAttributes.Archive, isWindows: true));
+        Assert.IsFalse(TransferRunner.UsesWindowsCopy(FileAttributes.Archive, isWindows: true));
+        Assert.IsFalse(TransferRunner.UsesWindowsCopy(FileAttributes.Encrypted, isWindows: false));
+    }
+
+    private static bool CanList(string folder)
+    {
+        try
+        {
+            return Directory.EnumerateFileSystemEntries(folder).Any();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 }

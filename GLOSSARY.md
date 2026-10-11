@@ -8,9 +8,17 @@ A keyboard-friendly, offline file manager for Windows 11, built for a developer 
 One of up to two side-by-side file views in a window; each Pane holds its own Tabs.
 _Avoid_: Panel, column, side
 
+**Compare**:
+Marking each entry of the two Panes' folders as only there, newer, older, same or different. It only reads; the one-way sync built on it copies what is new or newer and never deletes.
+_Avoid_: Diff, sync (for the marking alone)
+
 **Tab**:
 A single open location inside a Pane.
 _Avoid_: Page, view
+
+**View Mode**:
+How a Tab lays out its entries: Details (rows with columns), Tiles or Large Icons (with thumbnails). Each Tab keeps its own.
+_Avoid_: Layout, view (alone)
 
 **Bookmark**:
 A location (folder or file) the user explicitly saved for fast access. Global unless it belongs to a Workspace.
@@ -37,6 +45,10 @@ _Avoid_: Search (when only the current location is meant)
 **Quick Search**:
 Fuzzy lookup of files and folders across all Index Roots, opened from anywhere.
 _Avoid_: Global search, find
+
+**Folder Search**:
+A search through the current folder and all its subfolders by name, content text, date and size; its results take the place of the Pane's listing until it is closed.
+_Avoid_: Find in files, deep search, recursive filter
 
 **Transfer**:
 One copy or move job run by Pollux's own queue, with progress, pause, cancel and a conflict rule.
@@ -68,9 +80,17 @@ _Avoid_: Label, category, keyword
 The Pollux view of the Windows Desktop folder, treated as a landing zone to be emptied rather than a place to keep things.
 _Avoid_: Desktop (when meaning the Pollux view)
 
+**Recycle Bin**:
+The Windows Recycle Bin opened as a location in a Tab. Read-only: its entries can only be restored or deleted permanently.
+_Avoid_: Trash, wastebasket
+
 **Downloads Stack**:
 The compact popup listing the Downloads folder, opened from the tray without bringing up a full window.
 _Avoid_: Downloads flyout, downloads popup
+
+**Trusted Folder**:
+A folder the user explicitly marked as trusted, including its subfolders; only there may Pollux run tools whose behaviour the folder's own content can change (such as git).
+_Avoid_: Safe folder, whitelist, workspace trust
 
 ## Clipboard
 
@@ -127,5 +147,5 @@ Pollux's own limits on Copilot that hold in every Permission Mode: blocked comma
 _Avoid_: Policy (that is the organisation's), denylist, filter
 
 **Tainted Chat**:
-A Chat that has read content from an untrusted place (Downloads, Inbox, web, archives); it asks before shell, network and write actions until the user clears it.
+A Chat that has read content from an untrusted place (Downloads, Inbox, web, archives, network shares and mapped network drives, cloud-synced folders such as OneDrive and SharePoint), also through a junction or symbolic link into one; it asks before every action that is not a plain read (navigating Pollux and tools without path arguments included) until the user clears it.
 _Avoid_: Unsafe chat, quarantine

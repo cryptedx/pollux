@@ -10,4 +10,14 @@
     <!-- Surface AOT/trim problems at build time, not only at publish (ADR 0002). -->
     <IsAotCompatible Condition="'$(IsTestProject)' != 'true'">true</IsAotCompatible>
   </PropertyGroup>
+  <!-- Every project records its resolved packages and their content hashes in packages.lock.json (S-18). A developer
+       restore updates the lock file, so a dependency change shows up in the diff; CI (GitHub Actions sets CI=true)
+       restores in locked mode and fails when the lock file does not match. The lock files also hold packages the SDK
+       adds implicitly in its own version (ILLink, ILCompiler), which is why global.json pins the SDK exactly.
+       After a package or SDK change, restore every project on Windows with force-evaluate (Pollux.App in Debug and
+       Release) and commit the lock files; Directory.Build.targets explains why not on other systems. -->
+  <PropertyGroup>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
+  </PropertyGroup>
 </Project>

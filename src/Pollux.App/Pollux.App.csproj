@@ -13,7 +13,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationIcon>Assets\pollux.ico</ApplicationIcon>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>1.4.2</Version>
+    <Version>1.5.1</Version>
     <Product>Pollux</Product>
 
     <!-- Unpackaged, self-contained, per-user install without admin (ADR 0002). -->
@@ -31,6 +31,12 @@
     <PublishAot>true</PublishAot>
     <PublishTrimmed>true</PublishTrimmed>
     <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
+  </PropertyGroup>
+  <!-- NuGet lock file (S-18, see Directory.Build.props). Native AOT adds Microsoft.DotNet.ILCompiler to Release restores
+       only, so Debug keeps its own lock file instead of rewriting the one CI checks. The RID comes from Platform
+       (x64 / ARM64); passing -r instead would change the restore of every referenced project and break locked mode. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <NuGetLockFilePath>packages.debug.lock.json</NuGetLockFilePath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -50,6 +56,9 @@
          this build's RID (win-x64 / win-arm64), SHA256-checked, into runtimes\<rid>\native (ADR 0005). -->
     <PackageReference Include="GitHub.Copilot.SDK" />
   </ItemGroup>
+
+  <!-- The downloaded Copilot CLI must match the hash recorded in this repo, not only the release's own SHA256SUMS (S-18). -->
+  <Import Project="..\..\build\CopilotCliHashes.targets" />
 
   <!-- Bundled Copilot CLI (ADR 0005), after the SDK's _RegisterCopilotCliForCopy has listed its files:
        - ship the CLI license next to it (its redistribution terms require a copy);

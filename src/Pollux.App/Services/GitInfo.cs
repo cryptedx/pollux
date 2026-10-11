@@ -1,37 +1,29 @@
-using Pollux.Core.Navigation;
+using Pollux.Core.Git;
+using Pollux.Core.Launch;
+using Pollux.Core.Settings;
 
 namespace Pollux.App.Services;
 
-/// <summary>Current git branch of a folder, read straight from .git/HEAD (no git.exe, no process start).</summary>
+/// <summary>
+/// git in the file lists, always through the <see cref="GitGate"/> (ADR 0006): git status only in Trusted Folders,
+/// elsewhere the branch read from HEAD without starting a process.
+/// </summary>
 internal static class GitInfo
 {
-    /// <summary>Repository root containing <paramref name="folder"/>, or null.</summary>
-    public static string? RootFor(string folder)
-    {
-        if (WinPath.IsUnc(folder)) return null;
-        for (var dir = folder; dir is not null; dir = WinPath.Parent(dir))
-        {
-            if (Directory.Exists(Path.Combine(dir, ".git")) || File.Exists(Path.Combine(dir, ".git"))) return dir;
-        }
+    /// <summary>The git gate for the current settings (Trusted Folders and the git-status switch).</summary>
+    public static GitGate Gate(PolluxSettings settings) => new(settings.Files.TrustedFolders, settings.Files.GitStatus);
 
-        return null;
-    }
+    /// <summary>The branch to show for a folder, or null. Needs no trust: the gate only reads HEAD and never follows network gitdirs.</summary>
+    public static string? BranchFor(string folder) => new GitGate([], gitStatusEnabled: false).Evaluate(folder).Branch;
 
-    /// <summary>Runs "git status" for a repository (local only, 3 s timeout). Returns null when git is unavailable.</summary>
-    public static async Task<Core.Git.GitStatus?> StatusAsync(string root, CancellationToken ct)
+    /// <summary>Runs "git status" for a repository the gate allowed (local only, 3 s timeout). Returns null when git is unavailable.</summary>
+    public static async Task<GitStatus?> StatusAsync(GitGateResult gate, CancellationToken ct)
     {
+        if (gate is not { Mode: GitGateMode.RunStatus, RepoRoot: { } root }) return null;
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo("git", "-c core.fsmonitor=false -c core.hooksPath=NUL -c core.quotepath=off status --porcelain=v1 -z --ignored=matching --untracked-files=normal")
-            {
-                WorkingDirectory = root,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-            };
-            psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
-            using var p = System.Diagnostics.Process.Start(psi);
+            using var p = Shell.StartHelper(new LaunchIntent.Git(root, GitStatusCommand.Arguments), redirectStdErr: false, System.Text.Encoding.UTF8, out _,
+                GitStatusCommand.EnvironmentFor(gate.ObjectFormat));
             if (p is null) return null;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(3));
@@ -39,7 +31,7 @@ internal static class GitInfo
             {
                 var output = await p.StandardOutput.ReadToEndAsync(timeout.Token).ConfigureAwait(false);
                 await p.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-                return p.ExitCode == 0 ? Core.Git.GitStatus.Parse(output) : null;
+                return p.ExitCode == 0 ? GitStatus.Parse(output) : null;
             }
             catch (OperationCanceledException)
             {
@@ -51,41 +43,5 @@ internal static class GitInfo
         {
             return null;
         }
-    }
-
-    public static string? BranchFor(string folder)
-    {
-        if (WinPath.IsUnc(folder)) return null;
-        try
-        {
-            for (var dir = folder; dir is not null; dir = WinPath.Parent(dir))
-            {
-                var git = Path.Combine(dir, ".git");
-                string? head = null;
-                if (Directory.Exists(git)) head = Path.Combine(git, "HEAD");
-                else if (File.Exists(git))
-                {
-                    // Worktree or submodule: ".git" is a file pointing at the real git dir.
-                    var line = File.ReadAllText(git).Trim();
-                    if (line.StartsWith("gitdir:", StringComparison.Ordinal))
-                    {
-                        var gd = line[7..].Trim();
-                        head = Path.Combine(Path.IsPathRooted(gd) ? gd : Path.Combine(dir, gd), "HEAD");
-                    }
-                }
-
-                if (head is not null && File.Exists(head))
-                {
-                    var text = File.ReadAllText(head).Trim();
-                    return text.StartsWith("ref: refs/heads/", StringComparison.Ordinal) ? text[16..] : text[..Math.Min(7, text.Length)];
-                }
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
-
-        return null;
     }
 }

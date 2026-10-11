@@ -20,6 +20,9 @@ public sealed class EntryComparer(SortColumn column, bool descending, bool folde
         {
             SortColumn.Modified => x.Modified.CompareTo(y.Modified),
             SortColumn.Size => x.Size.CompareTo(y.Size),
+            SortColumn.Created => x.Created.CompareTo(y.Created),
+            SortColumn.Attributes => string.CompareOrdinal(Format.AttributeLetters(x.Attributes), Format.AttributeLetters(y.Attributes)),
+            SortColumn.Extension => string.Compare(x.Extension, y.Extension, StringComparison.OrdinalIgnoreCase),
             SortColumn.Type => string.Compare(x.Extension, y.Extension, StringComparison.OrdinalIgnoreCase),
             _ => 0,
         };

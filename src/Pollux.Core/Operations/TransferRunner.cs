@@ -190,6 +190,7 @@ public static class TransferRunner
             {
                 if (item.IsDirectory) Directory.Move(item.Source, item.Target);
                 else File.Move(item.Source, item.Target);
+                s.Job.Log(new TransferStep(TransferStepKind.Entry, item.Source, item.Target));
                 s.DoneFiles++;
                 s.DoneBytes += item.Size;
                 s.Report(item.Target);
@@ -207,11 +208,14 @@ public static class TransferRunner
                     dirTarget = renamed;
                 }
 
+                var existed = Directory.Exists(dirTarget);
                 Directory.CreateDirectory(dirTarget);
+                s.Job.Log(new TransferStep(TransferStepKind.Folder, item.Source, dirTarget, existed));
                 return true;
             }
 
             var target = s.Retarget(item.Target);
+            var replaced = false;
             if (Directory.Exists(target))
             {
                 // A folder is in the way of a file: never delete the folder, keep both.
@@ -234,10 +238,13 @@ public static class TransferRunner
                         target = Path.Combine(Path.GetDirectoryName(target)!, UniqueName(Path.GetDirectoryName(target)!, Path.GetFileName(target)));
                         break;
                 }
+
+                replaced = choice == ConflictChoice.Overwrite;
             }
 
             await CopyFileAsync(s, item.Source, target, item.Size, ct).ConfigureAwait(false);
             if (request.Kind == TransferKind.Move) File.Delete(item.Source);
+            s.Job.Log(new TransferStep(TransferStepKind.File, item.Source, target, replaced));
             s.DoneFiles++;
             s.Report(target);
             return true;
@@ -299,7 +306,6 @@ public static class TransferRunner
     /// </summary>
     private static async Task CopyFileAsync(RunState s, string source, string target, long size, CancellationToken ct)
     {
-        var buffer = new byte[Math.Max(4096, Math.Min(s.ChunkSize, size == 0 ? 4096 : size))];
         var temp = Path.Combine(Path.GetDirectoryName(target)!, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.pollux-part");
         var created = File.GetCreationTimeUtc(source);
         var written = File.GetLastWriteTimeUtc(source);
@@ -307,22 +313,19 @@ public static class TransferRunner
         var completed = false;
         try
         {
-            await using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.Asynchronous | FileOptions.SequentialScan))
-            await using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            if (UsesWindowsCopy(attributes, OperatingSystem.IsWindows()))
             {
-                if (OperatingSystem.IsWindows()) File.SetAttributes(temp, FileAttributes.Hidden); // not shown in listings while copying
-                if (size > 0) output.SetLength(size);
-                int read;
-                while ((read = await input.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
-                {
-                    await output.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
-                    s.DoneBytes += read;
-                    s.Report(target);
-                    await s.Job.WaitWhilePausedAsync(ct).ConfigureAwait(false);
-                    ct.ThrowIfCancellationRequested();
-                }
-
-                output.SetLength(output.Position);
+                // CopyFileEx keeps the file encrypted (and all streams); no per-chunk progress or mid-file cancel here.
+                ct.ThrowIfCancellationRequested();
+                File.Copy(source, temp, overwrite: false);
+                File.SetAttributes(temp, FileAttributes.Hidden);
+                s.DoneBytes += size;
+                s.Report(target);
+            }
+            else
+            {
+                await StreamCopyAsync(s, source, temp, target, size, ct).ConfigureAwait(false);
+                ZoneMark.Copy(source, temp); // before the swap and before a read-only attribute could block the write
             }
 
             File.SetCreationTimeUtc(temp, created);
@@ -341,6 +344,34 @@ public static class TransferRunner
                 catch (UnauthorizedAccessException) { }
             }
         }
+    }
+
+    /// <summary>
+    /// True when a file must be copied with the Windows copy API instead of streams: an EFS-encrypted source would
+    /// otherwise turn into a plaintext duplicate (S-10).
+    /// </summary>
+    internal static bool UsesWindowsCopy(FileAttributes sourceAttributes, bool isWindows) =>
+        isWindows && sourceAttributes.HasFlag(FileAttributes.Encrypted);
+
+    /// <summary>Copies the main data stream chunk by chunk, with progress, pause and cancel.</summary>
+    private static async Task StreamCopyAsync(RunState s, string source, string temp, string target, long size, CancellationToken ct)
+    {
+        var buffer = new byte[Math.Max(4096, Math.Min(s.ChunkSize, size == 0 ? 4096 : size))];
+        await using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (OperatingSystem.IsWindows()) File.SetAttributes(temp, FileAttributes.Hidden); // not shown in listings while copying
+        if (size > 0) output.SetLength(size);
+        int read;
+        while ((read = await input.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        {
+            await output.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            s.DoneBytes += read;
+            s.Report(target);
+            await s.Job.WaitWhilePausedAsync(ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+        }
+
+        output.SetLength(output.Position);
     }
 
     private static void RemoveEmptySourceFolders(List<Item> plan, RunState s)

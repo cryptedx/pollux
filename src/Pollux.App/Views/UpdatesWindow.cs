@@ -1,9 +1,9 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Pollux.App.Services;
+using Pollux.Core.Launch;
 using Pollux.Core.Updates;
 
 namespace Pollux.App.Views;
@@ -96,7 +96,7 @@ internal sealed partial class UpdatesWindow : Window
 
     private static async Task<string> RunCheckAsync(App app)
     {
-        var (_, output) = await RunWingetAsync("upgrade --include-unknown --accept-source-agreements --disable-interactivity", null);
+        var (_, output) = await RunWingetAsync(["upgrade", "--include-unknown", "--accept-source-agreements", "--disable-interactivity"], null);
         var ignored = new HashSet<string>(app.Services.Settings.Updates.IgnoredPackages, StringComparer.OrdinalIgnoreCase);
         LastResult = WingetParser.ParseUpgrades(output).Where(p => !ignored.Contains(p.Id)).ToList();
         ResultChanged?.Invoke();
@@ -160,7 +160,7 @@ internal sealed partial class UpdatesWindow : Window
         _list.Children.Clear();
         foreach (var p in packages)
         {
-            var box = new CheckBox { MinWidth = 0, IsEnabled = IsSafeId(p.Id) };
+            var box = new CheckBox { MinWidth = 0, IsEnabled = LaunchPlanner.IsSafeWingetId(p.Id) };
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(box, $"{p.Name} ({p.Id})");
             if (!box.IsEnabled) ToolTipService.SetToolTip(box, "winget shortened this id; update it from a terminal: winget upgrade");
             box.Checked += (_, _) => UpdateButtons();
@@ -227,28 +227,18 @@ internal sealed partial class UpdatesWindow : Window
         if (elevated)
         {
             // One elevated PowerShell runs all selected upgrades; Windows (or Delinea) asks for consent once.
-            // Ids are validated (no quotes or shell syntax) and the script is passed encoded, so nothing can break out of it.
-            var script = string.Join("; ", selected.Where(p => IsSafeId(p.Id)).Select(p => $"winget upgrade --id '{p.Id}' --exact --accept-source-agreements --accept-package-agreements")) + "; Read-Host 'Done. Press Enter to close'";
-            var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
-            try
-            {
-                Process.Start(new ProcessStartInfo("powershell.exe", $"-NoProfile -EncodedCommand {encoded}") { UseShellExecute = true, Verb = "runas" });
-                _status.Text = "running elevated in a separate window…";
-            }
-            catch (Win32Exception)
-            {
-                _status.Text = "elevation cancelled";
-            }
+            // The launch plan validates the ids and passes the script encoded, so nothing can break out of it (S-15).
+            _status.Text = Shell.Launch(new LaunchIntent.ElevatedWinget(selected.Select(p => p.Id).ToList())) ?? "running elevated in a separate window…";
 
             _busy = false;
             UpdateButtons();
             return;
         }
 
-        foreach (var p in selected.Where(p => IsSafeId(p.Id)))
+        foreach (var p in selected.Where(p => LaunchPlanner.IsSafeWingetId(p.Id)))
         {
             _status.Text = $"updating {p.Name}…";
-            var (code, _) = await RunWingetAsync($"upgrade --id \"{p.Id}\" --exact --accept-source-agreements --accept-package-agreements --disable-interactivity", line => DispatcherQueue.TryEnqueue(() => Append(line)));
+            var (code, _) = await RunWingetAsync(["upgrade", "--id", p.Id, "--exact", "--accept-source-agreements", "--accept-package-agreements", "--disable-interactivity"], line => DispatcherQueue.TryEnqueue(() => Append(line)));
             Append(code == 0 ? $"✓ {p.Id} updated" : $"✗ {p.Id} failed (exit {code}) — try 'Update selected as admin'");
         }
 
@@ -277,18 +267,11 @@ internal sealed partial class UpdatesWindow : Window
         return sb.ToString().TrimEnd();
     }
 
-    private static async Task<(int Code, string Output)> RunWingetAsync(string args, Action<string>? onLine)
+    private static async Task<(int Code, string Output)> RunWingetAsync(IReadOnlyList<string> args, Action<string>? onLine)
     {
-        var psi = new ProcessStartInfo("winget", args)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-        using var p = Process.Start(psi)!;
+        // A missing winget surfaces as the Win32Exception the callers already handle.
+        using var p = Shell.StartHelper(new LaunchIntent.Winget(args), redirectStdErr: true, Encoding.UTF8, out var missing)
+            ?? throw new Win32Exception(missing ?? "winget not found");
         var sb = new StringBuilder();
         p.OutputDataReceived += (_, e) => { if (e.Data is null) return; lock (sb) sb.AppendLine(e.Data); onLine?.Invoke(e.Data); };
         p.ErrorDataReceived += (_, e) => { if (e.Data is null) return; lock (sb) sb.AppendLine(e.Data); onLine?.Invoke(e.Data); };
@@ -297,8 +280,4 @@ internal sealed partial class UpdatesWindow : Window
         await p.WaitForExitAsync();
         lock (sb) return (p.ExitCode, sb.ToString());
     }
-
-    /// <summary>winget ids are dotted names; anything else (shortened "…" ids, quotes, spaces) is not passed to a command line.</summary>
-    private static bool IsSafeId(string id) =>
-        id.Length > 0 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' or '+');
 }

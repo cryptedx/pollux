@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -234,7 +233,10 @@ internal sealed partial class NotesWindow : Window
             var reveal = new MenuFlyoutItem { Text = "Show in Pollux" };
             reveal.Click += (_, _) => _app.OpenNewWindow().Reveal(n.Path);
             var code = new MenuFlyoutItem { Text = "Open in VS Code" };
-            code.Click += (_, _) => Shell.OpenInVsCode(n.Path, _app.Services.Settings.Integration.VsCodeCommand);
+            code.Click += (_, _) =>
+            {
+                if (Shell.OpenInVsCode(n.Path, _app.Services.Settings.Integration.VsCodeCommand) is { } error) _status.Text = error;
+            };
             var del = new MenuFlyoutItem { Text = "Delete (recycle bin)" };
             del.Click += (_, _) => Delete(n);
             menu.Items.Add(reveal);
@@ -401,7 +403,7 @@ internal sealed partial class NotesWindow : Window
     {
         try
         {
-            _core = await WebHost.InitializeAsync(_web, "notes.html");
+            _core = await WebHost.InitializeAsync(_web, "notes.html", WebViewKind.Notes);
             _core.WebMessageReceived += Core_WebMessageReceived;
             _core.NavigationCompleted += (_, e) => { if (!e.IsSuccess) CrashLog.Write(new InvalidOperationException($"notes.html navigation failed: {e.WebErrorStatus} {e.HttpStatusCode}")); };
         }
@@ -414,9 +416,10 @@ internal sealed partial class NotesWindow : Window
 
     private void Core_WebMessageReceived(CoreWebView2 sender, CoreWebView2WebMessageReceivedEventArgs args)
     {
-        using var doc = JsonDocument.Parse(args.TryGetWebMessageAsString());
-        var type = doc.RootElement.GetProperty("type").GetString();
-        switch (type)
+        // Only notes.html, parsed defensively (S-16): a "changed" message rewrites the open note on disk.
+        var message = WebHost.Receive(args, WebViewKind.Notes);
+        if (message is null) return;
+        switch (message.Type)
         {
             case "ready":
                 _ready = true;
@@ -426,7 +429,7 @@ internal sealed partial class NotesWindow : Window
                 else if (_notes.Count > 0) Open(_notes[0]);
                 break;
             case "changed":
-                OnEditorChanged(doc.RootElement.GetProperty("text").GetString() ?? "");
+                if (message.Text("text") is { } text) OnEditorChanged(text);
                 break;
             case "save":
                 SavePending();
@@ -441,7 +444,7 @@ internal sealed partial class NotesWindow : Window
                 SavePending();
                 break;
             case "error":
-                CrashLog.Write(new InvalidOperationException("notes.html: " + doc.RootElement.GetProperty("message").GetString()));
+                CrashLog.Write(new InvalidOperationException("notes.html: " + message.Text("message")));
                 break;
         }
     }

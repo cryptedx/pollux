@@ -25,14 +25,14 @@ public sealed class PaneTabs
     public void Load(PaneSession session)
     {
         _tabs.Clear();
-        foreach (var t in session.Tabs) _tabs.Add(new TabModel(t.Location));
+        foreach (var t in session.Tabs) _tabs.Add(new TabModel(t.Location) { ViewMode = t.ViewMode });
         if (_tabs.Count == 0) _tabs.Add(new TabModel(_newTabLocation()));
         ActiveIndex = Math.Clamp(session.ActiveTab, 0, _tabs.Count - 1);
     }
 
     public PaneSession ToSession() => new()
     {
-        Tabs = _tabs.Select(t => new TabSession { Location = t.Location }).ToList(),
+        Tabs = _tabs.Select(t => new TabSession { Location = t.Location, ViewMode = t.ViewMode }).ToList(),
         ActiveTab = ActiveIndex,
     };
 
@@ -104,6 +104,8 @@ public sealed class PaneTabs
             return;
         }
 
+        var mode = from._tabs[fromIndex].ViewMode;
         to.Insert(toIndex, from.Detach(fromIndex));
+        to.Active.ViewMode = mode;
     }
 }

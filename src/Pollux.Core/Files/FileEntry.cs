@@ -8,12 +8,16 @@ public sealed record FileEntry(
     bool IsDirectory,
     long Size,
     DateTime Modified,
-    FileAttributes Attributes)
+    FileAttributes Attributes,
+    DateTime Created = default)
 {
     // OneDrive placeholder attributes (not in the FileAttributes enum).
     private const int Pinned = 0x00080000;
     private const int Unpinned = 0x00100000;
     private const int RecallOnDataAccess = 0x00400000;
+
+    /// <summary>The folder a Recycle Bin entry was deleted from ("" when unknown); null for every other entry.</summary>
+    public string? OriginalLocation { get; init; }
 
     public bool IsHidden => Attributes.HasFlag(FileAttributes.Hidden);
     public bool IsSystem => Attributes.HasFlag(FileAttributes.System);

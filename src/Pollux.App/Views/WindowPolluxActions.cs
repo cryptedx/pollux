@@ -2,6 +2,7 @@ using Microsoft.UI.Dispatching;
 using Pollux.App.Services;
 using Pollux.Copilot.Tools;
 using Pollux.Core.Navigation;
+using Pollux.Core.Operations;
 
 namespace Pollux.App.Views;
 
@@ -14,6 +15,7 @@ namespace Pollux.App.Views;
 /// <param name="isDual">Whether the right Pane is shown.</param>
 /// <param name="hwnd">Owner of the shell's progress and error dialogs.</param>
 /// <param name="addBookmark">Adds a Bookmark (path, name, group); called on the UI thread.</param>
+/// <param name="recordUndo">Records what a file operation did in the undo history, so Ctrl+Z undoes Copilot's changes too.</param>
 /// <remarks>
 /// File operations (ticket 17) use the Windows shell like Pollux's own commands (SHFileOperation, which runs on
 /// IFileOperation): undoable in Explorer, deleting only into the recycle bin (an entry that cannot be recycled gets the
@@ -21,7 +23,8 @@ namespace Pollux.App.Views;
 /// move reports where each entry really went: the shell's name mappings give the new names of renamed entries.
 /// </remarks>
 internal sealed class WindowPolluxActions(
-    DispatcherQueue ui, IReadOnlyList<PaneView> panes, Func<int> activePane, Func<bool> isDual, nint hwnd, Action<string, string?, string?> addBookmark)
+    DispatcherQueue ui, IReadOnlyList<PaneView> panes, Func<int> activePane, Func<bool> isDual, nint hwnd, Action<string, string?, string?> addBookmark,
+    Action<UndoEntry?>? recordUndo = null)
     : IPolluxFileActions
 {
     public Task<IReadOnlyList<PaneSnapshot>> ReadPanesAsync(CancellationToken cancellationToken) =>
@@ -35,7 +38,14 @@ internal sealed class WindowPolluxActions(
 
     public async Task<NavigateResult> NavigateAsync(string pane, string location, bool newTab, CancellationToken cancellationToken)
     {
-        var target = location.Equals("home", StringComparison.OrdinalIgnoreCase) ? WinPath.Home : WinPath.Normalize(location);
+        var home = location.Equals("home", StringComparison.OrdinalIgnoreCase);
+        if (!home && !WinPath.IsAbsoluteLocation(location))
+        {
+            // Judged by the Guard Rules against the Working Folder, but resolved here against Pollux's own current folder.
+            return new(false, null, 0, $"{location} is not an absolute path. Use a full path such as C:\\folder.");
+        }
+
+        var target = home ? WinPath.Home : WinPath.Normalize(location);
         if (target != WinPath.Home)
         {
             var kind = await Task.Run(() => Directory.Exists(target) ? 1 : File.Exists(target) ? 2 : 0, cancellationToken).ConfigureAwait(false);
@@ -73,14 +83,15 @@ internal sealed class WindowPolluxActions(
         {
             var folder = operation.Targets[0];
             await Task.Run(() => Directory.CreateDirectory(folder), cancellationToken).ConfigureAwait(false);
+            recordUndo?.Invoke(UndoEntry.NewFolder(folder));
             return new(true, [folder], null);
         }
 
         return await OnUi(() => Task.FromResult(operation.Kind switch
         {
             FileOperationKind.Copy or FileOperationKind.Move => CopyOrMove(operation),
-            FileOperationKind.Rename => Done(Shell.Rename(hwnd, operation.Paths[0], operation.Name!), operation.Targets),
-            FileOperationKind.Recycle => Done(Shell.Delete(hwnd, operation.Paths, permanent: false, confirm: false), operation.Paths),
+            FileOperationKind.Rename => Rename(operation),
+            FileOperationKind.Recycle => Recycle(operation),
             FileOperationKind.AddBookmark => Bookmark(operation),
             _ => new FileOperationResult(false, [], $"{operation.Kind} is not supported."),
         }), cancellationToken).ConfigureAwait(false);
@@ -88,8 +99,26 @@ internal sealed class WindowPolluxActions(
 
     private FileOperationResult CopyOrMove(FileOperation operation)
     {
-        var ok = Shell.CopyOrMoveRenamingOnCollision(hwnd, operation.Kind == FileOperationKind.Move, operation.Paths, operation.Destination!, out var renamed);
+        var move = operation.Kind == FileOperationKind.Move;
+        var before = operation.Targets.Where(t => File.Exists(t) || Directory.Exists(t)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ok = Shell.CopyOrMoveRenamingOnCollision(hwnd, move, operation.Paths, operation.Destination!, out var renamed);
+        recordUndo?.Invoke(UndoEntry.ShellTransfer(move ? TransferKind.Move : TransferKind.Copy, operation.Paths, operation.Destination!, renamed, before.Contains, FileUndo.Target(hwnd)));
         return Done(ok, operation.TargetsAfter([.. renamed.Select(r => new RenamedEntry(r.OldPath, r.NewPath))]));
+    }
+
+    private FileOperationResult Rename(FileOperation operation)
+    {
+        var ok = Shell.Rename(hwnd, operation.Paths[0], operation.Name!);
+        if (ok) recordUndo?.Invoke(UndoEntry.Rename(operation.Paths[0], operation.Targets[0]));
+        return Done(ok, operation.Targets);
+    }
+
+    private FileOperationResult Recycle(FileOperation operation)
+    {
+        var since = DateTime.UtcNow;
+        var ok = Shell.Delete(hwnd, operation.Paths, permanent: false, confirm: false);
+        recordUndo?.Invoke(UndoEntry.Recycle(operation.Paths, since, FileUndo.Target(hwnd)));
+        return Done(ok, operation.Paths);
     }
 
     private FileOperationResult Bookmark(FileOperation operation)

@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -13,9 +12,6 @@ namespace Pollux.App.Views;
 /// <summary>Quick Look: Space shows the selected file (image, text/code via Monaco, PDF via the built-in viewer, hex for binaries).</summary>
 internal sealed class PreviewController(Grid host, TextBlock title, TextBlock meta)
 {
-    private static readonly HashSet<string> Images = new(StringComparer.OrdinalIgnoreCase) { "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "tif", "tiff" };
-    private static readonly HashSet<string> Browser = new(StringComparer.OrdinalIgnoreCase) { "pdf", "svg", "mp4", "webm", "mp3", "wav", "html", "htm" };
-
     private WebView2? _codeView;
     private Task<CoreWebView2>? _codeInit;
     private CoreWebView2? _codeCore;
@@ -23,6 +19,9 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
     private string? _pendingCode;
     private WebView2? _fileView;
     private Task<CoreWebView2>? _fileInit;
+
+    /// <summary>The one file the file preview's request handler serves (S-07); read at request time.</summary>
+    private string? _webFile;
 
     public string? CurrentPath { get; private set; }
 
@@ -43,11 +42,11 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
         {
             _ = ShowFolderAsync(entry.FullPath);
         }
-        else if (Images.Contains(entry.Extension))
+        else if (PreviewPolicy.ModeFor(entry.Extension) == PreviewMode.NativeImage)
         {
             host.Children.Add(new Image { Source = new BitmapImage(new Uri(entry.FullPath)), Stretch = Stretch.Uniform, Margin = new Thickness(16) });
         }
-        else if (Browser.Contains(entry.Extension))
+        else if (PreviewPolicy.ModeFor(entry.Extension) == PreviewMode.SandboxedWeb)
         {
             _ = ShowInBrowserAsync(entry.FullPath);
         }
@@ -106,11 +105,10 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
 
     private async Task<CoreWebView2> InitCodeAsync(WebView2 view)
     {
-        var core = await WebHost.InitializeAsync(view, "preview.html");
+        var core = await WebHost.InitializeAsync(view, "preview.html", WebViewKind.CodePreview);
         core.WebMessageReceived += (_, e) =>
         {
-            using var doc = JsonDocument.Parse(e.TryGetWebMessageAsString());
-            if (doc.RootElement.GetProperty("type").GetString() != "ready") return;
+            if (WebHost.Receive(e, WebViewKind.CodePreview)?.Type != "ready") return; // own page only (S-16)
             _codeReady = true;
             if (_pendingCode is not null) core.PostWebMessageAsString(_pendingCode);
         };
@@ -123,7 +121,7 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
         {
             _fileView = new WebView2();
             host.Children.Add(_fileView);
-            _fileInit = WebHost.InitializeAsync(_fileView, "blank.html");
+            _fileInit = WebHost.InitializeFilePreviewAsync(_fileView, () => _webFile);
         }
         else if (!host.Children.Contains(_fileView))
         {
@@ -132,9 +130,9 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
 
         var core = await _fileInit!;
         if (CurrentPath != path) return; // a newer preview replaced this one
-        core.ClearVirtualHostNameToFolderMapping("pollux.preview");
-        core.SetVirtualHostNameToFolderMapping("pollux.preview", Path.GetDirectoryName(path)!, CoreWebView2HostResourceAccessKind.Allow);
-        core.Navigate(WebHost.PreviewOrigin + Uri.EscapeDataString(Path.GetFileName(path)));
+        // No folder mapping: the request handler serves this one file and nothing next to it (S-07).
+        _webFile = path;
+        core.Navigate(PreviewPolicy.FileUrl(path));
     }
 
     private static bool LooksLikeText(string path)

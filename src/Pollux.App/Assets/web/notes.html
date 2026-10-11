@@ -18,7 +18,6 @@
 <script>
   const host = window.chrome.webview;
   let editor = null, knownTags = [], suppress = false;
-  window.MonacoEnvironment = { getWorkerUrl: () => 'monaco/vs/editor/editor.worker.js' };
   require.config({ paths: { vs: 'monaco/vs' } });
   require.onError = err => host.postMessage(JSON.stringify({ type: 'error', message: 'require: ' + (err && (err.stack || err.message) || err) }));
   require(['vs/editor/editor.main'], () => {

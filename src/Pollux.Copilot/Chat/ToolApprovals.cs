@@ -553,6 +553,7 @@ public sealed class ToolApprovals(
         {
             ToolKind.Shell => new("", "shell", "Run a command", r.Command ?? "", null, reason, paths),
             ToolKind.Write => new("", "write", "Change a file", string.Join("\n", r.Paths), null, reason, paths),
+            ToolKind.Read when r.Navigates => new("", "read", "Open a folder in Pollux", string.Join("\n", r.Paths), null, reason, paths),
             ToolKind.Read => new("", "read", "Read a file", string.Join("\n", r.Paths), null, reason, paths),
             ToolKind.Url => new("", "url", "Open a URL", string.Join("\n", r.Urls), null, reason, paths),
             _ => new("", toolName, $"Use {toolName}", string.Join("\n", r.Urls), null, reason, paths),

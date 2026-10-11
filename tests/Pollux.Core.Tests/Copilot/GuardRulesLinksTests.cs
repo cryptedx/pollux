@@ -45,7 +45,7 @@ public sealed class GuardRulesLinksTests
     [TestMethod]
     public void ReadingAProtectedFileThroughAJunctionIsDenied()
     {
-        var verdict = Evaluate(ToolRequest.Read(@"C:\repos\app\keys\id_rsa"), KeysToSsh);
+        var verdict = Evaluate(ToolRequest.Read(@"C:\repos\app\keys\config"), KeysToSsh);
 
         Assert.AreEqual(GuardDecision.Deny, verdict.Decision);
         Assert.AreEqual(@"Protected secret (~\.ssh)", verdict.Reason);

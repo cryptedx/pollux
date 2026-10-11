@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.RegularExpressions;
 using Pollux.Core.Navigation;
 using Pollux.Core.Settings;
 
@@ -10,7 +12,8 @@ namespace Pollux.Core.Copilot.Guards;
 /// junctions and symbolic links (paths are judged by where they really point); null: the real file system.
 /// </param>
 /// <param name="clock">Times the look for protected files below a searched folder (<see cref="MaxFolderCheckTime"/>); null: the system clock.</param>
-public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFiles? folders = null, TimeProvider? clock = null)
+/// <param name="places">Mapped network drives and cloud-sync roots (reading from them taints the Chat); null: the real machine.</param>
+public sealed partial class GuardRules(GuardRuleSettings? extensions = null, IFolderFiles? folders = null, TimeProvider? clock = null, IRemotePlaces? places = null)
 {
     /// <summary>The reason given when a shell command cannot be judged from its text (fail closed: the user is asked).</summary>
     public const string CannotAnalyse = "Guard Rules cannot analyse this command";
@@ -20,6 +23,18 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
 
     /// <summary>The reason given when the junctions or symbolic links in a path cannot be resolved (fail closed: the user is asked).</summary>
     public const string CannotResolveLinks = "Guard Rules cannot resolve the links in this path";
+
+    /// <summary>The reason a device namespace path (\\?\GLOBALROOT\..., \\.\PhysicalDrive0, volume GUIDs, pipes) is refused (SECURITY.md S-04).</summary>
+    public const string DevicePath = "Blocked: device path";
+
+    /// <summary>The reason opening a network location in Pollux asks: listing it authenticates to the host (SECURITY.md S-06).</summary>
+    public const string NetworkLocation = "Opens a network location";
+
+    /// <summary>
+    /// The reason opening a relative location in Pollux is refused: Pollux would resolve it against its own current folder,
+    /// not the Working Folder the rules judge it against (SECURITY.md S-06).
+    /// </summary>
+    public const string RelativeLocation = "Blocked: open an absolute path";
 
     /// <summary>At most this many entries below a searched folder are looked at ...</summary>
     public const int MaxFolderEntries = 20_000;
@@ -33,6 +48,7 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
     private readonly GuardRuleSettings _extensions = extensions ?? new();
     private readonly IFolderFiles _folders = folders ?? FileSystemFolderFiles.Instance;
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly IRemotePlaces _places = places ?? SystemRemotePlaces.Instance;
     private readonly ProtectedPaths _protected = new(extensions?.ProtectedPaths);
     private readonly UntrustedSources _untrusted = new(extensions?.UntrustedPaths);
 
@@ -140,9 +156,9 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
                         findings.Ask(reason);
                     }
 
-                    foreach (var path in PathArguments(c))
+                    foreach (var token in SecretCandidates(c))
                     {
-                        CheckSecret(path, context, findings);
+                        CheckSecret(token, context, findings);
                     }
 
                     foreach (var target in WriteTargets(c))
@@ -155,6 +171,16 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
                         CheckRecursiveRead(folder, context, findings);
                     }
                 }
+
+                foreach (var value in AssignedValues(statement))
+                {
+                    CheckSecret(value, context, findings);
+                }
+
+                foreach (var target in PipedWriteTargets(statement))
+                {
+                    CheckWorkingFolder(target, context, findings);
+                }
             }
 
             if (AlwaysAskRules.ContainsUrl(command) || WebClientMarkers.Any(m => command.Contains(m, StringComparison.OrdinalIgnoreCase)))
@@ -165,6 +191,18 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
 
         foreach (var path in request.Paths)
         {
+            if (request.Navigates && !WinPath.IsAbsoluteLocation(path))
+            {
+                findings.Deny($"{RelativeLocation} ({path})");
+                continue;
+            }
+
+            if (request.Navigates && RemoteShare(path, context) is { } share)
+            {
+                CheckNetworkLocation(share, context, findings);
+                continue;
+            }
+
             CheckSecret(path, context, findings);
             if (request.Kind == ToolKind.Write)
             {
@@ -187,7 +225,9 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
             findings.Ask("Accesses a URL");
         }
 
-        if (context.Tainted && request.Kind is ToolKind.Shell or ToolKind.Write or ToolKind.Url)
+        // A Tainted Chat asks before everything but a plain read: shell, writes, URLs, steering Pollux (navigating) and
+        // tools of any other kind, with or without path arguments (SECURITY.md S-12).
+        if (context.Tainted && (request.Kind != ToolKind.Read || request.Navigates))
         {
             findings.Ask("Tainted Chat: it has read untrusted content");
         }
@@ -239,10 +279,71 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
         return null;
     }
 
-    private string? Untrusted(string path, GuardContext context) =>
-        string.IsNullOrWhiteSpace(path) || path.Contains("://", StringComparison.Ordinal)
-            ? null
-            : _untrusted.Match(GuardPaths.Resolve(path, context), context) is { } pattern ? $"Read from an untrusted place ({pattern})" : null;
+    /// <summary>
+    /// Why reading <paramref name="path"/> brings untrusted content into the Chat, or null: judged as written and, for a
+    /// local path, again where its junctions and symbolic links really point (SECURITY.md S-12), so a junction into
+    /// Downloads or onto a share does not hide where the content comes from.
+    /// </summary>
+    private string? Untrusted(string path, GuardContext context)
+    {
+        if (LocalPath(path) is not { } local || GuardPaths.Resolve(local, context) is var resolved && GuardPaths.IsDevicePath(resolved))
+        {
+            return null;
+        }
+
+        // A share is judged as written: resolving its links would already contact the host.
+        var written = UntrustedPlace(resolved, context);
+        if (written is not null || WinPath.IsUnc(resolved))
+        {
+            return written;
+        }
+
+        return _folders.Canonical(resolved) is not { } real ? $"Read from a place whose links cannot be resolved ({resolved})"
+            : string.Equals(real, resolved, StringComparison.OrdinalIgnoreCase) ? null
+            : UntrustedPlace(GuardPaths.Resolve(real, context), context);
+    }
+
+    /// <summary>The untrusted place <paramref name="path"/> (resolved, absolute) lies in, as a reason; null when none.</summary>
+    private string? UntrustedPlace(string path, GuardContext context)
+    {
+        if (WinPath.IsUnc(path))
+        {
+            return $"Read from an untrusted place (network location {path})";
+        }
+
+        if (_places.IsNetworkDrive(path))
+        {
+            return $"Read from an untrusted place (network drive {path[..2]})";
+        }
+
+        if (_places.SyncRoots().FirstOrDefault(root => WinPath.IsSameOrUnder(path, root)) is { } synced)
+        {
+            return $"Read from an untrusted place (cloud-synced folder {synced})";
+        }
+
+        return _untrusted.Match(path, context) is { } pattern ? $"Read from an untrusted place ({pattern})" : null;
+    }
+
+    /// <summary>
+    /// The canonical UNC path when <paramref name="path"/> names a share on another host (the own host's admin shares
+    /// count as local drives); null otherwise.
+    /// </summary>
+    private static string? RemoteShare(string path, GuardContext context) =>
+        LocalPath(path) is { } local && GuardPaths.Resolve(local, context) is var resolved && WinPath.IsUnc(resolved) && !GuardPaths.IsDevicePath(resolved) ? resolved : null;
+
+    /// <summary>
+    /// A network location opened in Pollux: refused when protected, asked otherwise. Judged as written: resolving its
+    /// links would already contact the host.
+    /// </summary>
+    private void CheckNetworkLocation(string share, GuardContext context, Findings findings)
+    {
+        if (_protected.Match(share, context) is { } pattern)
+        {
+            findings.Deny($"Protected secret ({pattern})");
+        }
+
+        findings.Ask($"{NetworkLocation} ({share})");
+    }
 
     private void CheckSecret(string path, GuardContext context, Findings findings)
     {
@@ -252,7 +353,11 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
         }
 
         var resolved = GuardPaths.Resolve(local, context);
-        if (_protected.Match(resolved, context) is { } pattern)
+        if (GuardPaths.IsDevicePath(resolved))
+        {
+            findings.Deny($"{DevicePath} ({resolved})");
+        }
+        else if (_protected.Match(resolved, context) is { } pattern)
         {
             findings.Deny($"Protected secret ({pattern})");
         }
@@ -377,7 +482,17 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
             return true;
         }
 
+        if (statements.Any(s => HasExpression(s.Text)))
+        {
+            return true;
+        }
+
         var commands = statements.SelectMany(s => s.Commands).ToList();
+        if (commands.Any(c => c.Name == "new-object"))
+        {
+            return true;
+        }
+
         if (commands.Count > 1 && commands.Any(c => DirectoryChangers.Contains(c.Name)))
         {
             return true;
@@ -403,6 +518,64 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
 
         return false;
     }
+
+    /// <summary>
+    /// A PowerShell expression outside quotes builds values the parser cannot see (SECURITY.md S-03, ADR 0007): grouping or
+    /// sub-expression parentheses, string concatenation with <c>+</c>, and static .NET calls like <c>[IO.File]::ReadAllText</c>.
+    /// Text inside quotes (<c>git commit -m "fix (x)"</c>) is a literal and does not count.
+    /// </summary>
+    private static bool HasExpression(string statement)
+    {
+        var text = Unquoted(statement);
+        return text.Contains('(', StringComparison.Ordinal) || text.Contains(')', StringComparison.Ordinal)
+            || StaticCall().IsMatch(text) || Concatenation().IsMatch(text) || Splat().IsMatch(text);
+    }
+
+    /// <summary>The statement with every quoted string replaced by a single <c>'</c> (so a quote's neighbours stay visible).</summary>
+    private static string Unquoted(string statement)
+    {
+        var sb = new StringBuilder(statement.Length);
+        var quote = '\0';
+        foreach (var ch in statement)
+        {
+            if (quote != '\0')
+            {
+                if (ch == quote)
+                {
+                    quote = '\0';
+                }
+            }
+            else if (ch is '\'' or '"')
+            {
+                quote = ch;
+                sb.Append('\'');
+            }
+            else
+            {
+                sb.Append(ch);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>A static member access on a type literal: <c>[IO.File]::</c>, <c>[System.Environment]::</c>.</summary>
+    [GeneratedRegex(@"\[[\w.`]+(\[[\w.,\s]*\])?\]\s*::")]
+    private static partial Regex StaticCall();
+
+    /// <summary>
+    /// A PowerShell splat (<c>Get-Content @a</c>) or hashtable literal (<c>@{Path='...'}</c>): the arguments come from a
+    /// value the parser cannot see. A cmd <c>@echo</c> at the start of a statement and npm scopes (<c>@types/node</c>) do not count.
+    /// </summary>
+    [GeneratedRegex(@"(?<=[\s=,;|])@(\{|\w+(?=\s|$|[;|]))")]
+    private static partial Regex Splat();
+
+    /// <summary>
+    /// <c>+</c> joining values: a lone <c>+</c> token, or one next to a string, variable or parenthesis. Flags such as
+    /// <c>chmod +x</c> or names like <c>g++</c> do not count.
+    /// </summary>
+    [GeneratedRegex(@"(^|\s)\+(\s|$)|['$)]\s*\+|\+\s*['$(]")]
+    private static partial Regex Concatenation();
 
     /// <summary>A plain variable such as $cmd (not $_.Name, not $env:X).</summary>
     private static bool IsVariable(string word) =>
@@ -573,6 +746,11 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
             }
         }
 
+        if (AlwaysAskRules.GitConfigFile(c) is { } configFile)
+        {
+            yield return configFile;
+        }
+
         if (!WriteCommands.Contains(c.Name))
         {
             yield break;
@@ -586,6 +764,84 @@ public sealed class GuardRules(GuardRuleSettings? extensions = null, IFolderFile
             }
         }
     }
+
+    /// <summary>
+    /// A pipeline into a writing or deleting command (<c>Get-ChildItem D:\x | Remove-Item</c>) changes the items the commands
+    /// before it name: their path arguments count as write targets (SECURITY.md S-11, ADR 0007).
+    /// </summary>
+    private static IEnumerable<string> PipedWriteTargets(ShellStatement statement)
+    {
+        if (!statement.Connected)
+        {
+            yield break;
+        }
+
+        var commands = statement.Commands;
+        var lastWriter = -1;
+        for (var i = 0; i < commands.Count; i++)
+        {
+            if (WriteCommands.Contains(commands[i].Name))
+            {
+                lastWriter = i;
+            }
+        }
+
+        for (var i = 0; i < lastWriter; i++)
+        {
+            foreach (var a in PathArguments(commands[i]))
+            {
+                if (!IsSwitch(commands[i], a) && !IsNullDevice(a) && !AlwaysAskRules.ContainsUrl(a))
+                {
+                    yield return a;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every token a secret could hide in (SECURITY.md S-03): the command word, each path argument, and the value glued to a
+    /// short option (<c>-iC:\Users\me\.ssh\id_rsa</c>).
+    /// </summary>
+    private static IEnumerable<string> SecretCandidates(SimpleCommand c)
+    {
+        yield return c.RawName;
+        foreach (var path in PathArguments(c))
+        {
+            yield return path;
+        }
+
+        foreach (var a in c.Arguments)
+        {
+            if (a.Length > 2 && a[0] == '-' && a[1] != '-' && char.IsLetter(a[1]))
+            {
+                yield return a[2..];
+            }
+        }
+    }
+
+    /// <summary>
+    /// The values inside a statement's assignments and hashtable literals (<c>$a=@{Path='~\.ssh\id_rsa'}</c>): they name
+    /// paths a later splat (<c>Get-Content @a</c>) reads, so secrets are checked on them too (SECURITY.md S-03).
+    /// </summary>
+    private static IEnumerable<string> AssignedValues(ShellStatement statement)
+    {
+        foreach (var word in ShellParser.Tokenize(statement.Text))
+        {
+            if (word.AsSpan().IndexOfAny(AssignmentSeparatorValues) < 0)
+            {
+                continue;
+            }
+
+            foreach (var part in word.Split(AssignmentSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                yield return part;
+            }
+        }
+    }
+
+    private static readonly char[] AssignmentSeparators = ['=', '{', '}', ';', '\'', '"', '@'];
+
+    private static readonly System.Buffers.SearchValues<char> AssignmentSeparatorValues = System.Buffers.SearchValues.Create(AssignmentSeparators);
 
     private static bool IsNullDevice(string target) =>
         target.Equals("$null", StringComparison.OrdinalIgnoreCase) || target.Equals("nul", StringComparison.OrdinalIgnoreCase)

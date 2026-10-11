@@ -29,6 +29,15 @@ public static class Format
     public static string TypeLabel(FileEntry entry) =>
         entry.IsDirectory ? "Folder" : entry.Extension.Length == 0 ? "File" : entry.Extension.ToUpperInvariant();
 
+    /// <summary>Attribute letters in fixed slots, like attrib: "R-SA" (read-only, hidden, system, archive); "-" for unset.</summary>
+    public static string AttributeLetters(FileAttributes a) => string.Create(4, a, static (span, attrs) =>
+    {
+        span[0] = attrs.HasFlag(FileAttributes.ReadOnly) ? 'R' : '-';
+        span[1] = attrs.HasFlag(FileAttributes.Hidden) ? 'H' : '-';
+        span[2] = attrs.HasFlag(FileAttributes.System) ? 'S' : '-';
+        span[3] = attrs.HasFlag(FileAttributes.Archive) ? 'A' : '-';
+    });
+
     public static string Badge(FileEntry entry)
     {
         if (entry.IsDirectory) return "";

@@ -33,6 +33,19 @@ public static class GuardRequests
 
     private static readonly HashSet<string> UrlTools = new(StringComparer.OrdinalIgnoreCase) { "web_fetch", "fetch", "web_search" };
 
+    /// <summary>
+    /// Tools that only steer the session itself or read its state, without side effects: judged as a plain read of
+    /// nothing, so a Tainted Chat, which asks before every other tool (SECURITY.md S-12), does not prompt on every turn.
+    /// exit_plan_mode is not one: it turns planning into acting, which a Tainted Chat confirms.
+    /// </summary>
+    private static readonly HashSet<string> SteeringTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "report_intent", "ask_user", "task_complete", "read_agent", "list_agents", "pollux_read_panes",
+    };
+
+    /// <summary>The Pollux tool that opens a folder in a Pane.</summary>
+    private const string NavigateTool = "pollux_navigate";
+
     private static readonly string[] PatchFileMarkers = ["*** Update File:", "*** Add File:", "*** Delete File:", "*** Move to:"];
 
     /// <summary>A tool call as the pre-tool-use hook sees it: the tool's name and its arguments.</summary>
@@ -42,6 +55,20 @@ public static class GuardRequests
         {
             var command = Text(args, "command") ?? Text(args, "input") ?? Text(args, "cmd") ?? (args is { ValueKind: JsonValueKind.String } s ? s.GetString() : null);
             return ToolRequest.Shell(command ?? "");
+        }
+
+        if (SteeringTools.Contains(toolName))
+        {
+            return ToolRequest.Read();
+        }
+
+        // Pollux lists the folder it opens itself (no CLI permission request): judged as a read of the location, so a
+        // network share asks before Pollux contacts the host (SECURITY.md S-06). "home" (This PC) names no path.
+        if (toolName.Equals(NavigateTool, StringComparison.OrdinalIgnoreCase))
+        {
+            return Text(args, "location")?.Trim() is { Length: > 0 } location && !location.Equals("home", StringComparison.OrdinalIgnoreCase)
+                ? ToolRequest.Navigate(location)
+                : new ToolRequest(ToolKind.Read, null, [], []) { Navigates = true };
         }
 
         List<string> paths = [];

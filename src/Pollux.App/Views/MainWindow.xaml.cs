@@ -17,6 +17,7 @@ using Pollux.Core.Commands;
 using Pollux.Core.Copilot;
 using Pollux.Core.Files;
 using Pollux.Core.Navigation;
+using Pollux.Core.Places;
 using Pollux.Core.Session;
 using Pollux.Core.Settings;
 using Windows.ApplicationModel.DataTransfer;
@@ -57,6 +58,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         _panes = [Pane1, Pane2];
         Pane1.Index = 0;
         Pane2.Index = 1;
+        HookCompare();
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
@@ -168,6 +170,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
     private void Cleanup()
     {
         _closed = true;
+        _archiveCts?.Cancel(); // a zip job must not keep writing for a window that is gone
         lock (_pendingAsks)
         {
             foreach (var t in _pendingAsks.ToList()) t.TrySetResult(new Core.Operations.ConflictDecision(Core.Operations.ConflictChoice.Cancel, false));
@@ -272,6 +275,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
     {
         ApplySettings();
         foreach (var p in _panes) p.ApplySettings();
+        CompareSettingsChanged();
         _terminal?.SetTheme();
         _copilotPanel?.SetTheme();
         if (Services.SettingsError is { } err) ShowToast("Settings error: " + err, 6);
@@ -351,7 +355,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
     public void OnPaneStateChanged(PaneView pane)
     {
         if (pane != Active) return;
-        TitlePath.Text = (_workspace is { } ws ? $"⧉ {ws.Name} · " : "") + (pane.Folder is { } f ? ShortPath(f) : "home");
+        TitlePath.Text = (_workspace is { } ws ? $"⧉ {ws.Name} · " : "") + (pane.Folder is { } f ? ShortPath(f) : pane.Tab.IsRecycleBin ? "recycle bin" : "home");
         var sel = pane.SelectedItems;
         var text = $"{pane.VisibleItems.Count} items";
         if (sel.Count > 1) text = $"{sel.Count} selected · {Format.Size(sel.Where(i => !i.IsDirectory).Sum(i => i.Entry.Size))}";
@@ -378,6 +382,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         var current = Active.Tab.Location;
         SidebarPanel.Children.Clear();
         SidebarPanel.Children.Add(NavRow("Home", WinPath.Home, current, "⌂", ""));
+        SidebarPanel.Children.Add(RecycleBinRow(current));
 
         SidebarPanel.Children.Add(Heading("Bookmarks"));
         var n = 0;
@@ -491,9 +496,94 @@ internal sealed partial class MainWindow : Window, IPaneHost
                 var b = new Button { Content = panel, Style = Ui.FlatButton, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(8, 4, 8, 6), IsTabStop = false, Opacity = d.Ready ? 1 : 0.6 };
                 var root = d.Root;
                 b.Click += (_, _) => Active.Navigate(root);
+                var driveMenu = new MenuFlyout();
+                var drive = d;
+                if (DriveInput.CanEject(d.Type))
+                {
+                    var eject = new MenuFlyoutItem { Text = "Eject" };
+                    eject.Click += (_, _) => _ = DriveActionAsync(drive, eject: true);
+                    driveMenu.Items.Add(eject);
+                }
+
+                if (DriveInput.CanDisconnect(d.Type))
+                {
+                    var disconnect = new MenuFlyoutItem { Text = "Disconnect" };
+                    disconnect.Click += (_, _) => _ = DriveActionAsync(drive, eject: false);
+                    driveMenu.Items.Add(disconnect);
+                }
+
+                var map = new MenuFlyoutItem { Text = "Map network drive…" };
+                map.Click += (_, _) => _ = MapNetworkDriveAsync();
+                driveMenu.Items.Add(map);
+                b.ContextFlyout = driveMenu;
                 SidebarPanel.Children.Add(b);
             }
         }
+    }
+
+    private async Task MapNetworkDriveAsync()
+    {
+        var letterBox = new TextBox { Text = DriveInput.NextFreeLetter(Drives.Current.Select(d => d.Root)) ?? "", FontFamily = Mono, Width = 80, Header = "Drive letter" };
+        var shareBox = new TextBox { PlaceholderText = @"\\server\share", FontFamily = Mono, MinWidth = 360, Header = "Folder" };
+        var error = new TextBlock { Foreground = Theme.Brush("PolluxBadBrush"), Visibility = Visibility.Collapsed, TextWrapping = TextWrapping.Wrap };
+        var form = new StackPanel { Spacing = 8 };
+        form.Children.Add(shareBox);
+        form.Children.Add(letterBox);
+        form.Children.Add(error);
+        var dialog = new ContentDialog
+        {
+            Title = "Map network drive",
+            Content = form,
+            PrimaryButtonText = "Connect",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+            RequestedTheme = Theme.Current,
+        };
+        string letter = "", share = "";
+        dialog.PrimaryButtonClick += (_, e) =>
+        {
+            if (!DriveInput.TryNormalizeShare(shareBox.Text, out share)) error.Text = @"Enter the folder as \\server\share.";
+            else if (!DriveInput.TryNormalizeLetter(letterBox.Text, out letter)) error.Text = "Enter a drive letter, for example Z:.";
+            else if (Drives.Current.Any(d => d.Root.StartsWith(letter, StringComparison.OrdinalIgnoreCase))) error.Text = $"{letter} is already in use.";
+            else return;
+            error.Visibility = Visibility.Visible;
+            e.Cancel = true;
+        };
+        shareBox.Loaded += (_, _) => shareBox.Focus(FocusState.Keyboard);
+        var result = await dialog.ShowAsync();
+        Active.FocusList();
+        if (result != ContentDialogResult.Primary) return;
+
+        ShowToast($"Connecting {letter} …");
+        var hwnd = Hwnd;
+        var message = await Task.Run(() => DriveActions.Map(hwnd, letter, share));
+        Drives.Refresh();
+        if (message is null) { ShowToast($"{letter} connected"); Active.Navigate(letter + "\\"); }
+        else if (message.Length > 0) ShowToast("Could not connect: " + message, 6);
+    }
+
+    /// <summary>Ejects a removable or optical drive, or disconnects a network drive.</summary>
+    private async Task DriveActionAsync(DriveSnapshot? drive, bool eject)
+    {
+        if (drive is null) { ShowToast("The current folder is not on a drive"); return; }
+        if (eject ? !DriveInput.CanEject(drive.Type) : !DriveInput.CanDisconnect(drive.Type))
+        {
+            ShowToast(eject ? "This drive cannot be ejected" : "This is not a network drive");
+            return;
+        }
+
+        var root = drive.Root;
+        var letter = root.TrimEnd('\\');
+        // Leave the drive first so Pollux itself does not hold it open.
+        foreach (var pane in _panes)
+        {
+            if (pane.Folder is { } f && WinPath.IsSameOrUnder(f, root)) pane.Navigate(WinPath.Home);
+        }
+
+        var message = await Task.Run(() => eject ? DriveActions.Eject(letter) : DriveActions.Disconnect(letter));
+        Drives.Refresh();
+        ShowToast(message is null ? (eject ? $"{letter} ejected" : $"{letter} disconnected") : (eject ? "Could not eject: " : "Could not disconnect: ") + message, message is null ? 3 : 6);
     }
 
     private void OnDrivesChanged()
@@ -658,6 +748,8 @@ internal sealed partial class MainWindow : Window, IPaneHost
     {
         var keys = new List<string>();
         if (Active.IsFilterFocused) keys.Add("filterFocused");
+        // Folder Search keys apply in its boxes and the result list, not while editing the path.
+        if (Active.IsSearchActive && (focused is not TextBox || Active.IsSearchFocused)) keys.Add("searchActive");
         if (focused is ListViewItem or ListView) keys.Add("listFocused");
         if (focused is TextBox) keys.Add("inputFocused");
         return Context.Of([.. keys]);
@@ -669,6 +761,13 @@ internal sealed partial class MainWindow : Window, IPaneHost
     {
         if (!CopilotAvailability.AllowsCommand(id, _app.CopilotAvailable)) return;
         var p = Active;
+        if (Core.Recycle.RecycleBinCommands.Route(id, p.Tab.IsRecycleBin) is not { } routed)
+        {
+            ShowToast(p.Tab.IsRecycleBin ? "Not available in the Recycle Bin" : "Only in the Recycle Bin");
+            return;
+        }
+
+        id = routed;
         var command = CommandRegistry.Parse(id);
         switch (command.Kind)
         {
@@ -691,21 +790,39 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "search.quickOpen": ShowPalette(PaletteMode.Go); break;
             case "filter.show": p.ShowFilter(); break;
             case "filter.close": p.CloseFilter(); break;
+            case "search.inFolder": p.ShowSearch(); break;
+            case "search.cancel": p.CancelOrCloseSearch(); break;
+            case "search.revealInFolder": p.RevealSearchResult(); break;
             case "view.toggleDual" or "view.toggleDualAlt": ToggleDual(); break;
             case "view.toggleSidebar": _sidebar = !_sidebar; if (_sidebar && !Services.Settings.Sidebar.Visible) { Services.Settings.Sidebar.Visible = true; Services.SaveSettings(); } ApplyLayout(); RenderSidebar(); break;
             case "view.toggleHidden": Services.Settings.Files.ShowHidden = !Services.Settings.Files.ShowHidden; Services.SaveSettings(); ShowToast(Services.Settings.Files.ShowHidden ? "Showing hidden files" : "Hiding hidden files"); break;
             case "view.toggleStatusBar": Services.Settings.StatusBar.Visible = !Services.Settings.StatusBar.Visible; Services.SaveSettings(); break;
             case "view.toggleTheme": Services.Settings.Appearance.Theme = (ThemeMode)(((int)Services.Settings.Appearance.Theme + 1) % 3); Services.SaveSettings(); ShowToast("Theme: " + Services.Settings.Appearance.Theme); break;
             case "view.refresh": p.Refresh(); break;
+            case "view.calculateFolderSizes": p.CalculateFolderSizes(); break;
             case "view.sortName": p.SetSort(SortColumn.Name); break;
             case "view.sortModified": p.SetSort(SortColumn.Modified); break;
             case "view.sortSize": p.SetSort(SortColumn.Size); break;
             case "view.sortType": p.SetSort(SortColumn.Type); break;
+            case "view.details" or "view.tiles" or "view.icons" or "view.cycleMode": p.SetViewMode(ViewModes.ForCommand(id, p.ViewMode) ?? p.ViewMode); ShowToast("View: " + ViewModes.Label(p.ViewMode)); break;
+            case "view.sortCreated": p.SetSort(SortColumn.Created); break;
+            case "view.sortExtension": p.SetSort(SortColumn.Extension); break;
+            case "view.sortAttributes": p.SetSort(SortColumn.Attributes); break;
+            case "view.groupBy":
+                Services.Settings.Files.GroupBy = Core.Files.EntryGrouping.Next(Services.Settings.Files.GroupBy);
+                Services.SaveSettings();
+                ShowToast("Group by: " + Core.Files.EntryGrouping.Describe(Services.Settings.Files.GroupBy));
+                break;
             case "pane.focus1": SetActivePane(0); break;
             case "pane.focus2": if (_dual) SetActivePane(1); break;
             case "pane.switch": if (_dual) SetActivePane(1 - _activePane); break;
             case "pane.mirror": OpenInOtherPane(p.Tab.Location); break;
             case "pane.swap": SwapPanes(); break;
+            case "pane.compare": ToggleCompare(); break;
+            case "pane.compareRecursive": ToggleCompareSetting(recursive: true); break;
+            case "pane.compareContent": ToggleCompareSetting(recursive: false); break;
+            case "pane.selectDifferences": _ = SelectDifferencesAsync(); break;
+            case "pane.syncToOther": _ = SyncToOtherAsync(); break;
             case "tab.new": p.NewTab(); break;
             case "tab.close": p.CloseTab(p.ActiveTabIndex); break;
             case "tab.reopen": p.ReopenClosedTab(); break;
@@ -726,42 +843,64 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "nav.editPath": p.EditPath(); break;
             case "nav.downloads": p.Navigate(KnownFolders.Downloads); break;
             case "nav.desktop": p.Navigate(KnownFolders.Desktop); break;
+            case "drive.mapNetwork": _ = MapNetworkDriveAsync(); break;
+            case "drive.disconnect": _ = DriveActionAsync(p.Folder is { } df ? Drives.For(df) : null, eject: false); break;
+            case "drive.eject": _ = DriveActionAsync(p.Folder is { } ef ? Drives.For(ef) : null, eject: true); break;
+            case "nav.recycleBin": p.Navigate(WinPath.RecycleBin); break;
+            case "recycle.restore": _ = RestoreRecycledAsync(); break;
+            case "recycle.deletePermanent": _ = DeleteRecycledAsync(); break;
+            case "recycle.empty": _ = EmptyRecycleBinAsync(); break;
             case "file.open": p.OpenSelected(); break;
             case "file.preview": TogglePreview(); break;
             case "copilot.togglePanel": ToggleCopilotPanel(); break;
             case "view.togglePreviewPane": Services.Settings.Preview.PaneVisible = !Services.Settings.Preview.PaneVisible; Services.SaveSettings(); break;
             case "file.openWith": ForSingle(Shell.OpenWith); break;
             case "file.rename": _ = RenameAsync(); break;
+            case "file.batchRename": _ = BatchRenameAsync(); break;
             case "file.delete": Delete(permanent: false); break;
             case "file.deletePermanent": Delete(permanent: true); break;
             case "file.copy": _ = SetClipboardAsync(move: false); break;
             case "file.cut": _ = SetClipboardAsync(move: true); break;
             case "file.paste": _ = PasteAsync(); break;
+            case "edit.undo": RunUndo(redo: false); break;
+            case "edit.redo": RunUndo(redo: true); break;
             case "file.copyToOther": TransferToOther(move: false); break;
             case "file.moveToOther": TransferToOther(move: true); break;
             case "file.newFolder": _ = NewItemAsync(folder: true); break;
             case "file.newFile": _ = NewItemAsync(folder: false); break;
+            case "file.createShortcut": _ = CreateLinkAsync(LinkKind.Shortcut, inOther: false); break;
+            case "file.createShortcutInOther": _ = CreateLinkAsync(LinkKind.Shortcut, inOther: true); break;
+            case "file.createSymlink": _ = CreateLinkAsync(LinkKind.Symlink, inOther: true); break;
+            case "file.createJunction": _ = CreateLinkAsync(LinkKind.Junction, inOther: true); break;
             case "file.properties": Shell.ShowProperties(Hwnd, p.SelectedPaths.FirstOrDefault() ?? p.Folder ?? ""); break;
             case "file.copyPath": CopyText(string.Join(Environment.NewLine, TargetPaths())); break;
             case "file.copyPathQuoted": CopyText(string.Join(" ", TargetPaths().Select(x => $"\"{x}\""))); break;
             case "file.copyPathForward": CopyText(string.Join(Environment.NewLine, TargetPaths().Select(x => x.Replace('\\', '/')))); break;
             case "file.copyName": CopyText(string.Join(Environment.NewLine, TargetPaths().Select(Path.GetFileName))); break;
             case "file.selectAll": p.SelectAll(); break;
+            case "file.selectNone": p.SelectNone(); break;
+            case "file.invertSelection": p.InvertSelection(); break;
+            case "file.selectByPattern": _ = SelectByPatternAsync(p, select: true); break;
+            case "file.deselectByPattern": _ = SelectByPatternAsync(p, select: false); break;
             case "file.shellMenu": ShowShellMenu(); break;
             case "transfers.pauseAll": foreach (var j in _app.Transfers.Jobs.Where(j => !j.IsFinished)) j.Pause(); UpdateTransfersUi(); break;
             case "transfers.resumeAll": foreach (var j in _app.Transfers.Jobs.Where(j => !j.IsFinished)) j.Resume(); UpdateTransfersUi(); break;
             case "transfers.cancelAll": foreach (var j in _app.Transfers.Jobs.Where(j => !j.IsFinished)) j.Cancel(); break;
             case "transfers.show": TransfersBadge.Visibility = Visibility.Visible; RenderTransfersPanel(); FlyoutBase.ShowAttachedFlyout(TransfersBadge); break;
+            case "file.compress": StartArchive(compress: true, here: false); break;
+            case "file.extract": StartArchive(compress: false, here: false); break;
+            case "file.extractHere": StartArchive(compress: false, here: true); break;
+            case "file.archiveCancel": _archiveCts?.Cancel(); break;
             case "file.showInExplorer": Shell.RevealInExplorer(p.SelectedPaths.FirstOrDefault() ?? p.Folder ?? ""); break;
             case "bookmark.add": AddBookmark(p.Folder); break;
             case "bookmark.addSelection": AddBookmark(p.SelectedPaths.FirstOrDefault() ?? p.Folder); break;
             case "bookmark.remove": if (p.Folder is { } bf && Services.Bookmarks.Remove(bf)) { Services.PlacesUpdated(); ShowToast("Bookmark removed"); } break;
             case "terminal.toggle" or "terminal.toggleAlt": ToggleTerminal(); break;
             case "terminal.cdHere": if (_terminal is not null) { _terminal.ChangeDirectory(TerminalFolder()); _terminal.Focus(); } break;
-            case "terminal.open": Shell.OpenTerminal(TerminalFolder(), Services.Settings.Terminal); break;
-            case "terminal.openPowerShell": Shell.OpenShell(TerminalFolder(), "pwsh"); break;
-            case "integration.vscode": if (!Shell.OpenInVsCode(p.SelectedPaths.FirstOrDefault() ?? TerminalFolder(), Services.Settings.Integration.VsCodeCommand)) ShowToast("VS Code not found ('code' on PATH)"); break;
-            case "integration.copilot": if (!Shell.OpenInCopilot(p.SelectedPaths.FirstOrDefault(Directory.Exists) ?? TerminalFolder(), Services.Settings.Integration.CopilotAppCommand)) ShowToast("Set integration.copilotAppCommand in settings.json"); break;
+            case "terminal.open": ShowLaunchError(Shell.OpenTerminal(TerminalFolder(), Services.Settings.Terminal)); break;
+            case "terminal.openPowerShell": ShowLaunchError(Shell.OpenShell(TerminalFolder(), "pwsh")); break;
+            case "integration.vscode": ShowLaunchError(Shell.OpenInVsCode(p.SelectedPaths.FirstOrDefault() ?? TerminalFolder(), Services.Settings.Integration.VsCodeCommand)); break;
+            case "integration.copilot": ShowLaunchError(Shell.OpenInCopilot(p.SelectedPaths.FirstOrDefault(Directory.Exists) ?? TerminalFolder(), Services.Settings.Integration.CopilotAppCommand)); break;
             case "recent.clear": Services.Recent.Clear(); Services.PlacesUpdated(); break;
             case "workspace.switch": ShowPalette(PaletteMode.Workspaces); break;
             case "workspace.autosave": SaveWorkspace(); break;
@@ -800,6 +939,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         _dual = !_dual;
         ApplyLayout();
         if (_dual) SetActivePane(1);
+        CompareLayoutChanged();
     }
 
     private void SwapPanes()
@@ -886,7 +1026,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         CopilotPane.Visibility = _copilotPanelOpen ? Visibility.Visible : Visibility.Collapsed;
         CopilotPaneColumn.Width = _copilotPanelOpen ? new GridLength(CopilotPanelWidth) : new GridLength(0);
         if (_copilotPanelOpen) _copilotPanel ??= new CopilotPanel(CopilotPane, _app, () => { _copilotPanelOpen = false; ApplyCopilotPanel(); }, CopilotContext,
-            new WindowPolluxActions(DispatcherQueue, _panes, () => _activePane, () => _dual, Hwnd, AddBookmark), PickFolderAsync);
+            new WindowPolluxActions(DispatcherQueue, _panes, () => _activePane, () => _dual, Hwnd, AddBookmark, _app.Undo.Record), PickFolderAsync);
     }
 
     /// <summary>A folder dialog owned by this window (Copilot Working Folder); null when cancelled.</summary>
@@ -914,7 +1054,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         static Pollux.Copilot.Context.PaneContext Of(PaneView p) =>
             new(p.Folder, p.SelectedPaths, [.. p.VisibleItems.Select(i => i.Path)]);
         IEnumerable<PaneView> panes = _dual ? _panes : [Active];
-        var tabs = panes.SelectMany(p => p.Tabs).Where(t => !t.IsHome).Select(t => t.Location).ToList();
+        var tabs = panes.SelectMany(p => p.Tabs).Where(t => t.Folder is not null).Select(t => t.Location).ToList();
         return new(Of(Active), _dual ? Of(Other) : null, tabs);
     }
 
@@ -940,8 +1080,14 @@ internal sealed partial class MainWindow : Window, IPaneHost
         if (sources.Count == 0) return;
         if (string.Equals(Services.Settings.Files.OperationEngine, "windows", StringComparison.OrdinalIgnoreCase))
         {
-            if (move) Shell.Move(Hwnd, sources, targetDirectory);
-            else Shell.Copy(Hwnd, sources, targetDirectory);
+            // Names taken before the shell ran: an entry that replaced or merged into one of them is not undoable.
+            var before = sources.Select(s => Path.Combine(targetDirectory, Path.GetFileName(s.TrimEnd('\\'))))
+                .Where(t => File.Exists(t) || Directory.Exists(t)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            IReadOnlyList<(string OldPath, string NewPath)> renamed;
+            if (move) Shell.Move(Hwnd, sources, targetDirectory, out renamed);
+            else Shell.Copy(Hwnd, sources, targetDirectory, out renamed);
+            _app.Undo.Record(Core.Operations.UndoEntry.ShellTransfer(
+                move ? Core.Operations.TransferKind.Move : Core.Operations.TransferKind.Copy, sources, targetDirectory, renamed, before.Contains, FileUndo.Target(Hwnd)));
             foreach (var p in _panes) p.Refresh();
             return;
         }
@@ -1365,12 +1511,151 @@ internal sealed partial class MainWindow : Window, IPaneHost
         if (paths.Count == 0) return;
         var confirm = permanent ? Services.Settings.Files.ConfirmPermanentDelete : Services.Settings.Files.ConfirmDelete;
         var index = Active.VisibleItems.ToList().FindIndex(i => i.Path == paths[0]);
+        var since = DateTime.UtcNow;
         if (Shell.Delete(Hwnd, paths, permanent, confirm))
         {
+            if (!permanent) RefreshRecycleBins();
             var next = Active.VisibleItems.Where(i => !paths.Contains(i.Path)).ElementAtOrDefault(Math.Max(0, index));
             if (next is not null) Active.SelectByName(next.Entry.Name);
             else Active.Refresh();
         }
+
+        // Also after a partial delete; a permanent delete cannot be undone and is never recorded.
+        if (!permanent) _app.Undo.Record(Core.Operations.UndoEntry.Recycle(paths, since, FileUndo.Target(Hwnd)));
+    }
+
+    /// <summary>Undoes (or redoes) the newest file operation of any window; not while the queue still copies or moves.</summary>
+    private void RunUndo(bool redo)
+    {
+        if (_app.Transfers.IsBusy)
+        {
+            ShowToast("Wait until the running copy or move has finished");
+            return;
+        }
+
+        var target = FileUndo.Target(Hwnd);
+        var result = redo ? _app.Undo.Redo(target) : _app.Undo.Undo(target);
+        if (result.Ok)
+        {
+            foreach (var p in _panes) p.Refresh();
+        }
+
+        ShowToast(result.Message, result.Ok ? 3 : 5);
+    }
+
+    private CancellationTokenSource? _archiveCts;
+
+    /// <summary>Zips the selection or extracts the selected .zip files on a worker thread, with a toast for progress. One archive job at a time.</summary>
+    private void StartArchive(bool compress, bool here)
+    {
+        var pane = Active;
+        if (pane.Folder is not { } folder) return;
+        var paths = pane.SelectedPaths;
+        if (!compress) paths = paths.Where(Pollux.Core.Archives.ZipPath.IsZipFile).ToList();
+        if (paths.Count == 0)
+        {
+            ShowToast(compress ? "Select something to compress" : "Select a .zip file to extract");
+            return;
+        }
+
+        if (_archiveCts is not null)
+        {
+            ShowToast("Another zip job is still running (Cancel Zip Compress/Extract in the palette)");
+            return;
+        }
+
+        var cts = _archiveCts = new CancellationTokenSource();
+        var verb = compress ? "Compressing" : "Extracting";
+        ShowToast(verb + "…", 60);
+        var progress = new Progress<Pollux.Core.Archives.ZipProgress>(p =>
+        {
+            if (!_closed) ShowToast($"{verb} {p.DoneFiles}/{p.TotalFiles} {p.CurrentFile} (cancel: palette)", 60);
+        });
+        _ = Task.Run(() =>
+        {
+            string? selectName = null;
+            var skipped = 0;
+            if (compress)
+            {
+                selectName = Path.GetFileName(Pollux.Core.Archives.ZipArchiver.Compress(paths, folder, progress, cts.Token));
+            }
+            else
+            {
+                foreach (var zip in paths)
+                {
+                    var target = Pollux.Core.Archives.ZipArchiver.ExtractTargetFor(zip, here);
+                    // A breach of the zip bomb limits asks first (S-19); refusing throws, which ends in the error toast.
+                    var result = Pollux.Core.Archives.ZipArchiver.Extract(zip, target, progress,
+                        confirm: breach => AskExtractLimitAsync(breach).GetAwaiter().GetResult(), ct: cts.Token);
+                    skipped += result.SkippedUnsafe + result.SkippedExisting;
+                    if (!here && selectName is null) selectName = Path.GetFileName(target);
+                }
+            }
+
+            return (selectName, skipped);
+        }, cts.Token).ContinueWith(t => DispatcherQueue.TryEnqueue(() =>
+        {
+            _archiveCts = null;
+            cts.Dispose();
+            if (_closed) return;
+            if (t.IsCanceled || t.Exception?.GetBaseException() is OperationCanceledException) ShowToast("Zip cancelled");
+            else if (t.Exception?.GetBaseException() is { } ex) ShowToast(ex.Message, 6);
+            else
+            {
+                var (name, skippedCount) = t.Result;
+                ShowToast((compress ? "Created " : "Extracted ") + name + (skippedCount > 0 ? $" ({skippedCount} skipped)" : ""), skippedCount > 0 ? 6 : 3);
+                if (pane.Folder == folder) { pane.Refresh(); }
+            }
+        }));
+    }
+
+    /// <summary>
+    /// Asks on the UI thread whether to extract an archive that breaks the size or ratio limits. Called from the
+    /// archive worker thread, which waits for the answer; Cancel is the default, and a closed window answers no.
+    /// </summary>
+    private Task<bool> AskExtractLimitAsync(Pollux.Core.Archives.ExtractLimitBreach breach)
+    {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (_closed)
+        {
+            tcs.TrySetResult(false);
+            return tcs.Task;
+        }
+
+        var queued = DispatcherQueue.TryEnqueue(async () =>
+        {
+            await _dialogGate.WaitAsync();
+            try
+            {
+                if (_closed)
+                {
+                    tcs.TrySetResult(false);
+                    return;
+                }
+
+                var dialog = new ContentDialog
+                {
+                    Title = "Extract " + Path.GetFileName(breach.ZipPath) + "?",
+                    Content = new TextBlock { Text = breach.Describe(), TextWrapping = TextWrapping.Wrap },
+                    PrimaryButtonText = "Extract anyway",
+                    CloseButtonText = "Cancel",
+                    DefaultButton = ContentDialogButton.Close,
+                    XamlRoot = Content.XamlRoot,
+                    RequestedTheme = Theme.Current,
+                };
+                tcs.TrySetResult(await dialog.ShowAsync() == ContentDialogResult.Primary);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+            {
+                tcs.TrySetResult(false);
+            }
+            finally
+            {
+                _dialogGate.Release();
+            }
+        });
+        if (!queued) tcs.TrySetResult(false);
+        return tcs.Task;
     }
 
     private void TransferToOther(bool move)
@@ -1443,6 +1728,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
                 return;
             }
 
+            _app.Undo.Record(Core.Operations.UndoEntry.NewFile(Path.Combine(target, name), FileUndo.Target(Hwnd)));
             Active.SelectByName(name);
             ShowToast("Created " + name);
         }
@@ -1478,6 +1764,12 @@ internal sealed partial class MainWindow : Window, IPaneHost
         }
     }
 
+    private async Task SelectByPatternAsync(PaneView p, bool select)
+    {
+        var patterns = await PromptAsync(select ? "Select by pattern" : "Deselect by pattern", "*");
+        if (!string.IsNullOrWhiteSpace(patterns)) p.SelectByPattern(patterns, select);
+    }
+
     private async Task RenameAsync()
     {
         var sel = Active.SelectedItems;
@@ -1491,7 +1783,62 @@ internal sealed partial class MainWindow : Window, IPaneHost
             return;
         }
 
-        if (Shell.Rename(Hwnd, item.Path, name)) Active.SelectByName(name);
+        if (Shell.Rename(Hwnd, item.Path, name))
+        {
+            _app.Undo.Record(Core.Operations.UndoEntry.Rename(item.Path, Path.Combine(Path.GetDirectoryName(item.Path)!, name)));
+            Active.SelectByName(name);
+        }
+    }
+
+    private async Task BatchRenameAsync()
+    {
+        var sel = Active.SelectedItems;
+        if (sel.Count < 2 || Active.Folder is not { } dir) return;
+        if (Active.HasSearchResults)
+        {
+            // Result names are bare, but the results live in different folders: the folder-based plan would hit other files.
+            ShowToast("Batch rename is not available for search results");
+            return;
+        }
+
+        string PathOf(string name) => Path.Combine(dir, name);
+        bool Exists(string name) => File.Exists(PathOf(name)) || Directory.Exists(PathOf(name));
+        var plan = await BatchRenameDialog.ShowAsync(Content.XamlRoot, [.. sel.Select(i => new Core.Files.RenameSource(i.Entry.Name, i.IsDirectory))], Exists);
+        Active.FocusList();
+        if (plan is null) return;
+
+        var done = new List<Core.Files.RenameStep>();
+        try
+        {
+            foreach (var step in plan.Steps(Exists))
+            {
+                if (Directory.Exists(PathOf(step.From))) Directory.Move(PathOf(step.From), PathOf(step.To));
+                else File.Move(PathOf(step.From), PathOf(step.To));
+                done.Add(step);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Undo what already happened so a half-renamed batch never stays behind.
+            foreach (var step in Enumerable.Reverse(done))
+            {
+                try
+                {
+                    if (Directory.Exists(PathOf(step.To))) Directory.Move(PathOf(step.To), PathOf(step.From));
+                    else File.Move(PathOf(step.To), PathOf(step.From));
+                }
+                catch (Exception inner) when (inner is IOException or UnauthorizedAccessException) { }
+            }
+
+            ShowToast("Rename failed: " + ex.Message + " (changes were rolled back)", 6);
+            Active.Refresh();
+            return;
+        }
+
+        var renamed = plan.Items.Count(i => i.IsChanged);
+        _app.Undo.Record(Core.Operations.UndoEntry.BatchRename(dir, done, renamed));
+        Active.Refresh();
+        ShowToast($"Renamed {renamed} items");
     }
 
     private async Task NewItemAsync(bool folder)
@@ -1503,13 +1850,91 @@ internal sealed partial class MainWindow : Window, IPaneHost
         try
         {
             var path = Path.Combine(dir, name);
-            if (folder) Directory.CreateDirectory(path);
-            else if (!File.Exists(path)) await File.WriteAllTextAsync(path, "");
+            if (folder)
+            {
+                var existed = Directory.Exists(path);
+                Directory.CreateDirectory(path);
+                if (!existed) _app.Undo.Record(Core.Operations.UndoEntry.NewFolder(path));
+            }
+            else if (!File.Exists(path))
+            {
+                await File.WriteAllTextAsync(path, "");
+                _app.Undo.Record(Core.Operations.UndoEntry.NewFile(path, FileUndo.Target(Hwnd)));
+            }
+
             Active.SelectByName(name);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             ShowToast(ex.Message);
+        }
+    }
+
+    /// <summary>Creates a shortcut, symlink or junction for the selection. Symlinks and junctions go to the other pane when dual pane is on.</summary>
+    private async Task CreateLinkAsync(LinkKind kind, bool inOther)
+    {
+        var paths = Active.SelectedPaths;
+        if (paths.Count == 0)
+        {
+            ShowToast("Nothing selected");
+            return;
+        }
+
+        var useOther = inOther && (_dual || kind == LinkKind.Shortcut);
+        if (inOther && !_dual && kind == LinkKind.Shortcut)
+        {
+            ShowToast("Dual pane is off (Ctrl+<)");
+            return;
+        }
+
+        var pane = useOther ? Other : Active;
+        if (pane.Folder is not { } dir)
+        {
+            ShowToast("Target pane shows no folder");
+            return;
+        }
+
+        string? lastName = null;
+        foreach (var source in paths)
+        {
+            var isDir = Directory.Exists(source);
+            if (Links.Validate(kind, source, isDir, dir) is { } problem)
+            {
+                ShowToast(problem);
+                return;
+            }
+
+            var name = Links.SuggestName(kind, Path.GetFileName(source.TrimEnd('\\')), isDir, n => File.Exists(Path.Combine(dir, n)) || Directory.Exists(Path.Combine(dir, n)));
+            if (paths.Count == 1)
+            {
+                name = await PromptAsync(kind switch { LinkKind.Shortcut => "Create shortcut", LinkKind.Symlink => "Create symbolic link", _ => "Create junction" }, name, selectStem: true);
+                if (string.IsNullOrWhiteSpace(name)) return;
+                if (Links.ValidateName(name) is { } bad)
+                {
+                    ShowToast(bad);
+                    return;
+                }
+
+                if (File.Exists(Path.Combine(dir, name)) || Directory.Exists(Path.Combine(dir, name)))
+                {
+                    ShowToast("Already exists: " + name);
+                    return;
+                }
+            }
+
+            if (LinkTools.Create(kind, source, isDir, Path.Combine(dir, name)) is { } error)
+            {
+                ShowToast(error);
+                return;
+            }
+
+            lastName = name;
+        }
+
+        if (lastName is not null)
+        {
+            pane.Refresh();
+            if (pane == Active) pane.SelectByName(lastName);
         }
     }
 
@@ -1555,6 +1980,12 @@ internal sealed partial class MainWindow : Window, IPaneHost
         var result = await dialog.ShowAsync();
         Active.FocusList();
         return result == ContentDialogResult.Primary || (string?)box.Tag == "ok" ? box.Text.Trim() : null;
+    }
+
+    /// <summary>Shows why a tool did not start (it names the tool); nothing when it did.</summary>
+    private void ShowLaunchError(string? error)
+    {
+        if (error is not null) ShowToast(error, 6);
     }
 
     public void ShowToast(string text, int seconds = 3)

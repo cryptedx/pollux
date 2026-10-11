@@ -30,6 +30,7 @@ public static class SettingsStore
         s.Appearance ??= new();
         s.App ??= new();
         s.Files ??= new();
+        s.Files.TrustedFolders ??= [];
         s.Tabs ??= new();
         s.Sidebar ??= new();
         s.Recent ??= new();

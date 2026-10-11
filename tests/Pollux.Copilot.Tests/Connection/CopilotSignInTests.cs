@@ -6,10 +6,9 @@ namespace Pollux.Copilot.Tests.Connection;
 public sealed class CopilotSignInTests
 {
     [TestMethod]
-    public void ConfiguredCliRunsItsLoginInATerminal()
+    public void ConfiguredCliIsTheLoginCli()
     {
-        var line = CopilotSignIn.TerminalCommandLine(new CopilotCli.Configured("/tools/copilot"), _ => false);
-        Assert.AreEqual("/k \"\"/tools/copilot\" login\"", line);
+        Assert.AreEqual("/tools/copilot", CopilotSignIn.CliPath(new CopilotCli.Configured("/tools/copilot"), _ => false));
     }
 
     [TestMethod]
@@ -18,13 +17,13 @@ public sealed class CopilotSignInTests
         var wrapper = Path.Combine("x", "native", "copilot-runtime.exe");
         var sibling = Path.Combine("x", "native", "copilot.exe");
 
-        Assert.Contains(sibling, CopilotSignIn.TerminalCommandLine(new CopilotCli.Bundled(wrapper), f => f == sibling)!);
-        Assert.Contains(wrapper, CopilotSignIn.TerminalCommandLine(new CopilotCli.Bundled(wrapper), _ => false)!);
+        Assert.AreEqual(sibling, CopilotSignIn.CliPath(new CopilotCli.Bundled(wrapper), f => f == sibling));
+        Assert.AreEqual(wrapper, CopilotSignIn.CliPath(new CopilotCli.Bundled(wrapper), _ => false));
     }
 
     [TestMethod]
     public void MissingCliCannotSignIn()
     {
-        Assert.IsNull(CopilotSignIn.TerminalCommandLine(new CopilotCli.Missing("gone"), _ => true));
+        Assert.IsNull(CopilotSignIn.CliPath(new CopilotCli.Missing("gone"), _ => true));
     }
 }

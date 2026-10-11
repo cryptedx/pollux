@@ -25,6 +25,8 @@ public sealed record SelectEntriesResult(bool Ok, int Selected, IReadOnlyList<st
 /// <summary>
 /// The Pollux tools Copilot gets for the Panes: read location and selection, open a location, select entries.
 /// They need no approval: they only change what Pollux shows, never files (file operations come with their own approval).
+/// The Guard Rules still judge every call in the pre-tool-use hook; pollux_navigate as a read of its location, so a
+/// network share asks and a protected location is refused before Pollux opens it.
 /// </summary>
 public static class PolluxTools
 {

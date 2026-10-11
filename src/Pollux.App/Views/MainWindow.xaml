@@ -132,6 +132,7 @@
                 <Border x:Name="UpdatesBadge" Visibility="Collapsed" Tapped="UpdatesBadge_Tapped" Background="{ThemeResource PolluxAccentSoftBrush}" CornerRadius="4" Padding="6,0">
                     <TextBlock x:Name="UpdatesBadgeText" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxAccentBrush}" />
                 </Border>
+                <TextBlock x:Name="CompareText" Visibility="Collapsed" FontFamily="{StaticResource PolluxMono}" FontSize="11.5" Foreground="{ThemeResource PolluxAccentBrush}" VerticalAlignment="Center" ToolTipService.ToolTip="Folders of both panes are being compared (command: Pane: Compare Folders switches it off)" />
                 <TextBlock x:Name="SelectionText" FontFamily="{StaticResource PolluxMono}" FontSize="11.5" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center" />
                 <Border BorderBrush="{ThemeResource PolluxLineBrush}" BorderThickness="1,1,1,2" CornerRadius="4" Padding="5,0">
                     <TextBlock x:Name="PaletteHint" Text="Ctrl+Shift+P" FontFamily="{StaticResource PolluxMono}" FontSize="11" Foreground="{ThemeResource PolluxMutedBrush}" />

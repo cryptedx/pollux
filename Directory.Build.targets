@@ -4,4 +4,12 @@
   <ItemGroup>
     <TestingPlatformBuilderHook Remove="98058041-B5B6-4A75-9834-58E6DF796A22" />
   </ItemGroup>
+
+  <!-- The committed lock files are written on Windows with the official SDK, like CI. Other SDK builds (e.g. Homebrew's
+       source-built SDK on macOS) bring their own copies of SDK-implicit packages such as Microsoft.NET.ILLink.Tasks,
+       whose content hash differs from nuget.org's, so restoring against the committed lock files fails there (NU1403).
+       Off Windows, restores outside CI therefore keep their lock file in obj and leave the committed one alone. -->
+  <PropertyGroup Condition="'$(OS)' != 'Windows_NT' And '$(CI)' != 'true'">
+    <NuGetLockFilePath>$(MSBuildProjectDirectory)/obj/packages.lock.json</NuGetLockFilePath>
+  </PropertyGroup>
 </Project>

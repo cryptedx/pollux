@@ -191,7 +191,8 @@ internal sealed partial class SettingsWindow : Window
         var t = new TextBox { Text = string.Join(Environment.NewLine, get()), PlaceholderText = placeholder, AcceptsReturn = true, MinWidth = 320, MinHeight = 70, FontFamily = Mono, FontSize = 12, TextWrapping = TextWrapping.NoWrap };
         t.LostFocus += (_, _) =>
         {
-            var list = t.Text.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
+            // WinUI's TextBox separates lines with a bare CR, so split on both line endings.
+            var list = t.Text.Split(['\r', '\n'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
             if (!list.SequenceEqual(get())) { set(list); Save(); }
         };
         return t;
@@ -222,9 +223,14 @@ internal sealed partial class SettingsWindow : Window
             new("Files", "files.operationEngine", "Copy / move engine", "pollux: queue with progress in the status bar, pause and cancel. windows: the classic Windows copy dialogs.", Options(["pollux", "windows"], () => S.Files.OperationEngine, v => S.Files.OperationEngine = v)),
             new("Files", "files.conflictPolicy", "When a file already exists", "Ask, or decide automatically.", Choice(() => S.Files.ConflictPolicy, v => S.Files.ConflictPolicy = v)),
             new("Files", "files.gitStatus", "Git status in file lists", "Letters M/A/U/R/D next to changed files; ignored files dimmed. Runs git locally.", Bool(() => S.Files.GitStatus, v => S.Files.GitStatus = v)),
+            new("Files", "files.trustedFolders", "Trusted Folders", "git status only runs in these folders and their subfolders; elsewhere only the branch is shown. One path per line; delete a line to stop trusting it. Network paths and mapped network drives are not accepted.", TextList(() => S.Files.TrustedFolders, v => S.Files.TrustedFolders = Core.Git.GitGate.Sanitize(v), @"C:\dev")),
+            new("Files", "files.autoFolderSizes", "Calculate folder sizes automatically", "On local drives; otherwise use View: Calculate Folder Sizes (Alt+S).", Bool(() => S.Files.AutoFolderSizes, v => S.Files.AutoFolderSizes = v)),
             new("Files", "files.foldersFirst", "Folders first", "", Bool(() => S.Files.FoldersFirst, v => S.Files.FoldersFirst = v)),
             new("Files", "files.sortBy", "Sort by", "", Choice(() => S.Files.SortBy, v => S.Files.SortBy = v)),
+            new("Files", "files.columns", "Extra columns", "created, attributes, extension. Right-click the column header to toggle.", TextList(() => S.Files.Columns, v => S.Files.Columns = v, "created")),
+            new("Files", "files.groupBy", "Group by", "Command palette: View: Cycle Grouping.", Choice(() => S.Files.GroupBy, v => S.Files.GroupBy = v)),
             new("Files", "files.sortDescending", "Sort descending", "", Bool(() => S.Files.SortDescending, v => S.Files.SortDescending = v)),
+            new("Files", "files.viewMode", "Default view mode", "Details, Tiles or Icons (large, with thumbnails) for Tabs that have not picked their own. Ctrl+Alt+1/2/3 switch the current Tab.", Choice(() => S.Files.ViewMode, v => S.Files.ViewMode = v)),
             new("Files", "files.dateFormat", "Date format", ".NET format string.", Text(() => S.Files.DateFormat, v => S.Files.DateFormat = v, "yyyy-MM-dd HH:mm")),
             new("Files", "files.confirmDelete", "Confirm delete to recycle bin", "", Bool(() => S.Files.ConfirmDelete, v => S.Files.ConfirmDelete = v)),
             new("Files", "files.confirmPermanentDelete", "Confirm permanent delete", "Shift+Del.", Bool(() => S.Files.ConfirmPermanentDelete, v => S.Files.ConfirmPermanentDelete = v)),
@@ -260,6 +266,7 @@ internal sealed partial class SettingsWindow : Window
             new("Search", "search.indexNetworkPaths", "Index network paths", "Can be slow.", Bool(() => S.Search.IndexNetworkPaths, v => S.Search.IndexNetworkPaths = v)),
             new("Search", "search.excludeNames", "Skip folders named", "One per line.", TextList(() => S.Search.ExcludeNames, v => S.Search.ExcludeNames = v, "node_modules")),
             new("Search", "search.maxResults", "Max results", "", Number(() => S.Search.MaxResults, v => S.Search.MaxResults = (int)v, 10, 500, 10)),
+            new("Search", "search.maxContentFileMegabytes", "Largest file searched for text (MB)", "Folder Search (Ctrl+Shift+F) skips bigger files when looking for text.", Number(() => S.Search.MaxContentFileMegabytes, v => S.Search.MaxContentFileMegabytes = (int)v, 1, 1024)),
             new("Search", "filter.matchInitials", "Filter matches word initials", "\"dbp\" finds Directory.Build.props.", Bool(() => S.Filter.MatchInitials, v => S.Filter.MatchInitials = v)),
 
             new("Tools", "terminal.app", "Terminal", "", Options(["wt", "pwsh", "powershell", "cmd"], () => S.Terminal.App, v => S.Terminal.App = v)),

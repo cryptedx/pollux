@@ -10,7 +10,33 @@ public static class WinPath
 {
     public const string Home = "pollux:home";
 
+    /// <summary>The Windows Recycle Bin, shown read-only in a Tab (it spans all drives, so it is no folder).</summary>
+    public const string RecycleBin = "pollux:recycle-bin";
+
+    /// <summary>The location a typed name stands for ("home", "recycle bin", "shell:RecycleBinFolder"), or null for anything else.</summary>
+    public static string? WellKnown(string text) => text.Trim().ToLowerInvariant() switch
+    {
+        "home" or Home => Home,
+        "recycle bin" or "recyclebin" or "shell:recyclebinfolder" or RecycleBin => RecycleBin,
+        _ => null,
+    };
+
     public static bool IsUnc(string path) => path.StartsWith(@"\\", StringComparison.Ordinal);
+
+    /// <summary>
+    /// A location that means the same from every current folder, as written: a drive path (<c>C:\x</c>), a UNC or device
+    /// path (<c>\\host\x</c>, <c>//host/x</c>) or a file: URI. Not <c>src</c>, <c>~\x</c>, <c>%VAR%\x</c>, <c>C:x</c> or <c>\x</c>.
+    /// </summary>
+    public static bool IsAbsoluteLocation(string location)
+    {
+        var t = location.Trim().Trim('"');
+        return IsDriveRooted(t) || t.StartsWith(@"\\", StringComparison.Ordinal) || t.StartsWith("//", StringComparison.Ordinal)
+            || t.StartsWith("file:", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>A path rooted at a drive letter ("C:\x", "C:/x"); not "C:x" (relative to the drive's current folder).</summary>
+    public static bool IsDriveRooted(string path) =>
+        path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] is '\\' or '/';
 
     public static string Normalize(string path)
     {

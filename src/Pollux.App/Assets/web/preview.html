@@ -12,7 +12,6 @@
 <script>
   const host = window.chrome.webview;
   let editor = null, pending = null;
-  window.MonacoEnvironment = { getWorkerUrl: () => 'monaco/vs/editor/editor.worker.js' };
   require.config({ paths: { vs: 'monaco/vs' } });
   require(['vs/editor/editor.main'], () => {
     editor = monaco.editor.create(document.getElementById('editor'), {

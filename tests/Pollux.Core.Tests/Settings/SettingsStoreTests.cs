@@ -159,4 +159,15 @@ public sealed class SettingsStoreTests
         Assert.IsTrue(SettingsStore.Parse("{}").Settings.KeepsResident);
         Assert.IsFalse(SettingsStore.Serialize(settings).Contains("keepsResident", StringComparison.Ordinal));
     }
+
+    [TestMethod]
+    public void TrustedFoldersAreAListInFilesSettingsAndEmptyByDefault()
+    {
+        Assert.AreEqual(0, SettingsStore.Parse("{}").Settings.Files.TrustedFolders.Count);
+        Assert.AreEqual(0, SettingsStore.Parse("""{ "files": { "trustedFolders": null } }""").Settings.Files.TrustedFolders.Count);
+
+        var parsed = SettingsStore.Parse("""{ "files": { "trustedFolders": [ "C:\\dev" ] } }""").Settings;
+        CollectionAssert.AreEqual(new[] { @"C:\dev" }, parsed.Files.TrustedFolders);
+        CollectionAssert.AreEqual(new[] { @"C:\dev" }, SettingsStore.Parse(SettingsStore.Serialize(parsed)).Settings.Files.TrustedFolders);
+    }
 }

@@ -1,9 +1,10 @@
 using System.Text;
-using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.Web.WebView2.Core;
 using Pollux.App.Services;
+using Pollux.Core.Files;
+using Pollux.Core.Launch;
 
 namespace Pollux.App.Views;
 
@@ -36,35 +37,35 @@ internal sealed class TerminalController(Border host, Func<string> folder, Actio
         _flush.Interval = TimeSpan.FromMilliseconds(16);
         _flush.Tick += (_, _) => Flush();
         _flush.Start();
-        _core = await WebHost.InitializeAsync(_web, "terminal.html");
+        _core = await WebHost.InitializeAsync(_web, "terminal.html", WebViewKind.Terminal);
         _core.PermissionRequested += (_, e) =>
         {
             if (e.PermissionKind == CoreWebView2PermissionKind.ClipboardRead) e.State = CoreWebView2PermissionState.Allow;
         };
-        _core.WebMessageReceived += (_, e) => OnMessage(e.TryGetWebMessageAsString(), shell, fontSize);
+        _core.WebMessageReceived += (_, e) => OnMessage(WebHost.Receive(e, WebViewKind.Terminal), shell, fontSize);
     }
 
-    private void OnMessage(string json, string shell, double fontSize)
+    /// <summary>Messages from terminal.html only (S-16); sizes are clamped, malformed messages were dropped by the reader.</summary>
+    private void OnMessage(WebMessage? message, string shell, double fontSize)
     {
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        switch (root.GetProperty("type").GetString())
+        if (message is null) return;
+        switch (message.Type)
         {
             case "ready":
                 _ready = true;
-                _cols = (short)root.GetProperty("cols").GetInt32();
-                _rows = (short)root.GetProperty("rows").GetInt32();
+                _cols = message.TerminalSize("cols") ?? _cols;
+                _rows = message.TerminalSize("rows") ?? _rows;
                 Post(WebHost.Json(("type", "theme"), ("dark", Theme.Current == ElementTheme.Dark)));
                 Post(WebHost.Json(("type", "fontSize"), ("size", fontSize)));
                 StartShell(shell);
                 Focus();
                 break;
             case "input":
-                _pty?.Write(root.GetProperty("data").GetString() ?? "");
+                if (message.Text("data") is { } data) _pty?.Write(data);
                 break;
             case "resize":
-                _cols = (short)root.GetProperty("cols").GetInt32();
-                _rows = (short)root.GetProperty("rows").GetInt32();
+                _cols = message.TerminalSize("cols") ?? _cols;
+                _rows = message.TerminalSize("rows") ?? _rows;
                 _pty?.Resize(_cols, _rows);
                 break;
             case "toggle":
@@ -76,18 +77,15 @@ internal sealed class TerminalController(Border host, Func<string> folder, Actio
     private void StartShell(string shell)
     {
         _pty?.Dispose();
-        _isCmd = shell == "cmd";
-        var exe = shell switch
-        {
-            "cmd" => "cmd.exe",
-            "powershell" => "powershell.exe -NoLogo",
-            _ => ExistsOnPath("pwsh.exe") ? "pwsh.exe -NoLogo" : "powershell.exe -NoLogo",
-        };
+        _isCmd = ShellKinds.Parse(shell) == ShellKind.Cmd;
         var cwd = folder();
         if (!Directory.Exists(cwd)) cwd = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        // The shell is an absolute path from the launch plan: CreateProcess would otherwise look in Pollux's own folder first (S-15).
+        var run = Shell.PlanEmbeddedTerminal(cwd, shell);
+        var exe = Pollux.Core.Launch.CommandLine.Quote(run.Executable) + (run.Arguments.Length > 0 ? " " + run.Arguments : "");
         try
         {
-            _pty = PseudoConsole.Start(exe, cwd, _cols, _rows);
+            _pty = PseudoConsole.Start(exe, run.WorkingDirectory, _cols, _rows);
             _pty.Output += text => { lock (_gate) _pending.Append(text); };
             var pty = _pty;
             _pty.Exited += () => host.DispatcherQueue.TryEnqueue(() =>
@@ -103,9 +101,6 @@ internal sealed class TerminalController(Border host, Func<string> folder, Actio
             Post(WebHost.Json(("type", "data"), ("data", "Could not start shell: " + ex.Message + "\r\n")));
         }
     }
-
-    private static bool ExistsOnPath(string exe) =>
-        (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';').Any(p => p.Length > 0 && File.Exists(Path.Combine(p, exe)));
 
     private void Flush()
     {
@@ -124,7 +119,7 @@ internal sealed class TerminalController(Border host, Func<string> folder, Actio
     public void ChangeDirectory(string path)
     {
         if (_pty is null) return;
-        var command = _isCmd ? $"cd /d \"{path}\"" : $"Set-Location -LiteralPath '{EscapePowerShellSingleQuoted(path)}'";
+        var command = _isCmd ? Pollux.Core.Launch.CommandLine.CmdChangeDirectory(path) : $"Set-Location -LiteralPath '{EscapePowerShellSingleQuoted(path)}'";
         _pty.Write(command + "\r");
     }
 

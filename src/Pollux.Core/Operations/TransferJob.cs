@@ -22,6 +22,15 @@ public sealed record TransferRequest(TransferKind Kind, IReadOnlyList<string> So
 
 public enum TransferState { Queued, Running, Paused, Completed, Cancelled, Failed }
 
+/// <summary>What one step of a transfer did: moved a whole entry at once (same volume), copied or moved one file, or made a folder.</summary>
+public enum TransferStepKind { Entry, File, Folder }
+
+/// <summary>
+/// One completed step of a transfer, kept so it can be undone. <paramref name="Existed"/>: the file was replaced, or the
+/// folder was already there (merged into).
+/// </summary>
+public sealed record TransferStep(TransferStepKind Kind, string Source, string Target, bool Existed = false);
+
 public sealed record TransferProgress(long TotalBytes, long DoneBytes, int TotalFiles, int DoneFiles, string CurrentFile, double BytesPerSecond)
 {
     public static TransferProgress Empty { get; } = new(0, 0, 0, 0, "", 0);
@@ -35,6 +44,7 @@ public sealed class TransferJob(TransferRequest request) : IDisposable
     private static int _nextId;
     private readonly object _gate = new();
     private readonly List<string> _errors = [];
+    private readonly List<TransferStep> _journal = [];
     private readonly CancellationTokenSource _cancel = new();
     private TaskCompletionSource? _resume;
 
@@ -47,6 +57,12 @@ public sealed class TransferJob(TransferRequest request) : IDisposable
     public IReadOnlyList<string> Errors
     {
         get { lock (_gate) return _errors.ToList(); }
+    }
+
+    /// <summary>The steps completed so far, in order (parents before their contents).</summary>
+    public IReadOnlyList<TransferStep> Journal
+    {
+        get { lock (_gate) return _journal.ToList(); }
     }
 
     public bool IsFinished => State is TransferState.Completed or TransferState.Cancelled or TransferState.Failed;
@@ -125,5 +141,10 @@ public sealed class TransferJob(TransferRequest request) : IDisposable
     internal void AddError(string message)
     {
         lock (_gate) _errors.Add(message);
+    }
+
+    internal void Log(TransferStep step)
+    {
+        lock (_gate) _journal.Add(step);
     }
 }

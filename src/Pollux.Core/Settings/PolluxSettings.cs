@@ -4,7 +4,10 @@ public enum ThemeMode { System, Light, Dark }
 
 public enum Density { Compact, Comfortable }
 
-public enum SortColumn { Name, Modified, Type, Size }
+public enum SortColumn { Name, Modified, Type, Size, Created, Attributes, Extension }
+
+/// <summary>How the Details view groups its rows under headers.</summary>
+public enum GroupBy { None, Type, Modified }
 
 /// <summary>Everything a user can configure in settings.json. Every property has a sensible default.</summary>
 public sealed class PolluxSettings
@@ -27,6 +30,7 @@ public sealed class PolluxSettings
     public PreviewSettings Preview { get; set; } = new();
     public CopilotSettings Copilot { get; set; } = new();
     public ClipboardSettings Clipboard { get; set; } = new();
+    public CompareSettings Compare { get; set; } = new();
 
     /// <summary>Pollux keeps running after the last window closes: the tray setting is on, or the Clipboard History needs it (ADR 0003).</summary>
     [System.Text.Json.Serialization.JsonIgnore]
@@ -92,6 +96,17 @@ public sealed class AppSettings
     public string GlobalHotkey { get; set; } = "win+alt+e";
 }
 
+public sealed class CompareSettings
+{
+    /// <summary>Compare the subfolders of both Panes' folders too (Pane: Compare Folders).</summary>
+    public bool Recursive { get; set; }
+    /// <summary>Read files of the same size and compare their content, not only size and modified time.</summary>
+    public bool Content { get; set; }
+
+    /// <summary>The comparison rules; hidden entries are compared when the Panes show them.</summary>
+    public Compare.CompareOptions Options(bool includeHidden) => new(Recursive, Content, includeHidden);
+}
+
 public sealed class FilesSettings
 {
     public bool ShowHidden { get; set; }
@@ -100,18 +115,29 @@ public sealed class FilesSettings
     public bool FoldersFirst { get; set; } = true;
     public SortColumn SortBy { get; set; } = SortColumn.Name;
     public bool SortDescending { get; set; }
+    /// <summary>Optional Details columns that are shown: "created", "attributes", "extension".</summary>
+    public List<string> Columns { get; set; } = [];
+    public GroupBy GroupBy { get; set; } = GroupBy.None;
     public string DateFormat { get; set; } = "yyyy-MM-dd HH:mm";
     public bool ConfirmDelete { get; set; }
     public bool ConfirmPermanentDelete { get; set; } = true;
     public bool SingleClickOpen { get; set; }
+    /// <summary>Compute folder sizes automatically in folders on local drives (otherwise on demand).</summary>
+    public bool AutoFolderSizes { get; set; }
     /// <summary>Show git status letters (M/A/U/…) and dim ignored files in repositories. Runs git.exe locally.</summary>
     public bool GitStatus { get; set; } = true;
+    /// <summary>Trusted Folders (ADR 0006): git status only runs in these folders and their subfolders. Network locations are ignored.</summary>
+    public List<string> TrustedFolders { get; set; } = [];
+    /// <summary>Set once Trusted Folders were seeded from the Bookmarks (first start after the update), so seeding never repeats.</summary>
+    public bool TrustedFoldersSeeded { get; set; }
     /// <summary>"pollux": own transfer queue with progress in the status bar. "windows": the shell's copy dialogs.</summary>
     public string OperationEngine { get; set; } = "pollux";
     /// <summary>When a file already exists at the target (Pollux engine only).</summary>
     public Operations.ConflictPolicy ConflictPolicy { get; set; } = Operations.ConflictPolicy.Ask;
     /// <summary>Seconds before a slow (e.g. network) folder shows a timeout hint.</summary>
     public int SlowFolderSeconds { get; set; } = 5;
+    /// <summary>View mode of a Tab that has not picked its own (view.details / view.tiles / view.icons).</summary>
+    public Files.ViewMode ViewMode { get; set; } = Files.ViewMode.Details;
 }
 
 public sealed class TabsSettings
@@ -187,6 +213,8 @@ public sealed class SearchSettings
     public List<string> ExcludeNames { get; set; } = ["node_modules", ".git", "bin", "obj", ".vs", "packages", "__pycache__", ".venv"];
     public int MaxResults { get; set; } = 50;
     public bool IndexNetworkPaths { get; set; }
+    /// <summary>Folder Search does not read larger files when searching for text.</summary>
+    public int MaxContentFileMegabytes { get; set; } = 10;
 }
 
 public sealed class NotesSettings

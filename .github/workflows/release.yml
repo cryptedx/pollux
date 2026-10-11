@@ -5,16 +5,20 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-permissions:
-  contents: write
+# No token permissions by default; each job asks for what it needs (S-18).
+permissions: {}
 
 env:
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
   TESTINGPLATFORM_TELEMETRY_OPTOUT: '1'
 
+# Actions are pinned by commit SHA (a tag can be moved); the comment names the release the SHA belongs to.
 jobs:
+  # Runs tests, NuGet build targets and the Copilot CLI download: third-party code, so read-only.
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -23,38 +27,55 @@ jobs:
           - platform: ARM64
             rid: win-arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           global-json-file: global.json
+      # NuGet restores run in locked mode here (CI=true, see Directory.Build.props): packages.lock.json must match.
       - name: Test core
         if: matrix.platform == 'x64'
         run: dotnet test --project tests/Pollux.Core.Tests -c Release
       - name: Test copilot
         if: matrix.platform == 'x64'
         run: dotnet test --project tests/Pollux.Copilot.Tests -c Release
+      # The RID follows from Platform (win-x64 / win-arm64). No -r: it would change every project's restore and fail locked mode.
       - name: Publish (Native AOT)
-        run: dotnet publish src/Pollux.App -c Release -p:Platform=${{ matrix.platform }} -r ${{ matrix.rid }} -o out/Pollux
+        run: dotnet publish src/Pollux.App -c Release -p:Platform=${{ matrix.platform }} -o out/Pollux
       - name: Package
         shell: pwsh
         run: |
           Copy-Item scripts/install.ps1, scripts/uninstall.ps1 out/Pollux/
           Compress-Archive -Path out/Pollux/* -DestinationPath Pollux-${{ matrix.rid }}.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Pollux-${{ matrix.rid }}
           path: Pollux-${{ matrix.rid }}.zip
 
+  # The only job with a write token: it runs no build code, only hashes, attests and uploads the zips.
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release upload
+      id-token: write # signs the build provenance attestation (Sigstore)
+      attestations: write # stores the attestation with the repository
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           merge-multiple: true
-      # Das Release legt die Forgejo-Action publish-github an, hier nur die Zips anhängen.
+      - name: Checksums
+        run: |
+          sha256sum Pollux-*.zip > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: Pollux-*.zip
+      # The release itself is created by the Forgejo action publish-github; this only attaches the files.
+      # Never overwrite: an asset that already exists fails the upload instead of being replaced silently.
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" Pollux-*.zip --repo "${GITHUB_REPOSITORY}" --clobber
+        run: gh release upload "${GITHUB_REF_NAME}" Pollux-*.zip SHA256SUMS --repo "${GITHUB_REPOSITORY}"

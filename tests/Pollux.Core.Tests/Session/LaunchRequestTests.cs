@@ -49,4 +49,22 @@ public sealed class LaunchRequestTests
         Assert.IsFalse(Parse("/dirA").WantsNoWindow);
         Assert.IsFalse(Parse("--quit").WantsNoWindow);
     }
+
+    [TestMethod]
+    public void S09_AdminInstanceIgnoresForwardedCommandsAndWorkspaces()
+    {
+        // A process running as the user launches Pollux.exe with commands for the elevated instance to run.
+        var r = Parse(@"C:\Apps\Pollux.exe", "/dirA", "--command", "integration.vscode,terminal.open", "--workspace", "evil").ForAdminInstance();
+
+        Assert.AreEqual(0, r.Commands.Count);
+        Assert.IsNull(r.Workspace);
+        Assert.AreEqual(Path.GetFullPath("/dirA"), r.Target);
+    }
+
+    [TestMethod]
+    public void AdminInstanceKeepsTheOtherFlags()
+    {
+        var r = Parse("--quit", "--notes", "--background").ForAdminInstance();
+        Assert.IsTrue(r.Quit && r.Notes && r.Background);
+    }
 }

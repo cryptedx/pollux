@@ -51,6 +51,42 @@ public sealed class GuardRequestsTests
     }
 
     [TestMethod]
+    [DataRow("""{"location":"C:\\docs","pane":"left","newTab":true}""", @"C:\docs")]
+    [DataRow("""{"location":"\\\\attacker\\x"}""", @"\\attacker\x")]
+    [DataRow("""{"location":"\\\\?\\GLOBALROOT\\Device\\x"}""", @"\\?\GLOBALROOT\Device\x")]
+    public void NavigateIsAReadOfItsLocation(string args, string location)
+    {
+        var request = GuardRequests.FromHook("pollux_navigate", Args(args));
+
+        Assert.AreEqual($"Read||{location}|", Show(request));
+        Assert.IsTrue(request.Navigates);
+    }
+
+    [TestMethod]
+    [DataRow("""{"location":"home"}""")]
+    [DataRow("""{"location":"HOME"}""")]
+    [DataRow("""{"location":"  "}""")]
+    [DataRow("""{"pane":"left"}""")]
+    public void NavigateHomeOrNowhereIsAReadOfNothing(string args)
+    {
+        var request = GuardRequests.FromHook("pollux_navigate", Args(args));
+
+        Assert.AreEqual("Read|||", Show(request));
+        Assert.IsTrue(request.Navigates);
+    }
+
+    [TestMethod]
+    public void NavigateAsAPermissionRequestOfACustomToolIsAReadToo()
+    {
+        var request = GuardRequests.FromPermission(new PermissionRequestCustomTool
+        {
+            ToolName = "pollux_navigate", ToolDescription = "", Args = Args("""{"location":"\\\\attacker\\x"}"""),
+        });
+
+        Assert.AreEqual(@"Read||\\attacker\x|", Show(request));
+    }
+
+    [TestMethod]
     public void WebFetchIsUrlAccess()
     {
         Assert.AreEqual("Url|||https://example.com/x", Show(GuardRequests.FromHook("web_fetch", Args("""{"url":"https://example.com/x"}"""))));
@@ -106,8 +142,17 @@ public sealed class GuardRequestsTests
     [TestMethod]
     public void ToolWithoutArgumentsIsOther()
     {
-        Assert.AreEqual("Other|||", Show(GuardRequests.FromHook("report_intent", null)));
+        Assert.AreEqual("Other|||", Show(GuardRequests.FromHook("some_new_tool", null)));
     }
+
+    [TestMethod]
+    public void SteeringToolsAreAPlainReadOfNothing() =>
+        Assert.AreEqual("Read|||", Show(GuardRequests.FromHook("report_intent", null)));
+
+    // Leaving plan mode turns planning into acting: a Tainted Chat confirms it like any other non-read tool.
+    [TestMethod]
+    public void ExitPlanModeIsNotASteeringTool() =>
+        Assert.AreEqual("Other|||", Show(GuardRequests.FromHook("exit_plan_mode", null)));
 
     [TestMethod]
     public void ShellPermissionRequestCarriesCommandAndPossiblePathsAndUrls()

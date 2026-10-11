@@ -8,7 +8,7 @@ namespace Pollux.Core.Files;
 public readonly record struct FolderRow(FileEntry Entry, IReadOnlyList<MatchRange> Highlights, GitMark Git);
 
 /// <summary>The rows a folder shows and which of them (by index) to select.</summary>
-public sealed record FolderListing(IReadOnlyList<FolderRow> Rows, IReadOnlyList<int> Selected);
+public sealed record FolderListing(IReadOnlyList<FolderRow> Rows, IReadOnlyList<int> Selected, IReadOnlyList<RowGroup>? Groups = null);
 
 /// <summary>The working-tree status of the repository <paramref name="Root"/>, for git marks.</summary>
 public sealed record FolderGit(GitStatus Status, string Root);
@@ -22,7 +22,7 @@ public static class FolderProjection
     /// <summary>
     /// Hides in-flight Transfer files and hidden/system entries (per settings), sorts, applies the Filter and adds git marks.
     /// Selects the entry named <paramref name="focusName"/> if given, else the entries named in <paramref name="selectedNames"/>
-    /// (case-insensitive), else the first row.
+    /// (case-insensitive), else the first row. <paramref name="folderSizes"/> (full path to bytes) gives folders their computed size.
     /// </summary>
     public static FolderListing Project(
         IEnumerable<FileEntry> entries,
@@ -31,7 +31,9 @@ public static class FolderProjection
         string? filter,
         FolderGit? git,
         IReadOnlyList<string> selectedNames,
-        string? focusName)
+        string? focusName,
+        DateTime? now = null,
+        IReadOnlyDictionary<string, long>? folderSizes = null)
     {
         var s = settings.Files;
         var comparer = new EntryComparer(s.SortBy, s.SortDescending, s.FoldersFirst);
@@ -39,6 +41,11 @@ public static class FolderProjection
         var gitHere = git is not null && WinPath.IsSameOrUnder(folder, git.Root) ? git : null;
         var relative = gitHere is null ? "" : RepoRelative(folder, gitHere.Root);
         var rows = new List<FolderRow>();
+        if (folderSizes is { Count: > 0 })
+        {
+            entries = entries.Select(e => e.IsDirectory && folderSizes.TryGetValue(e.FullPath, out var size) ? e with { Size = size } : e);
+        }
+
         foreach (var e in entries.Order(comparer))
         {
             if (e.Name.EndsWith(PartSuffix, StringComparison.OrdinalIgnoreCase)) continue;
@@ -49,6 +56,9 @@ public static class FolderProjection
             var mark = gitHere is null ? GitMark.None : gitHere.Status.MarkFor(relative, e.Name, e.IsDirectory);
             rows.Add(new FolderRow(e, m.Ranges, mark));
         }
+
+        var (grouped, groups) = EntryGrouping.Apply(rows, s.GroupBy, now ?? DateTime.Now);
+        rows = grouped;
 
         IReadOnlyList<string> names = focusName is { } f ? [f] : selectedNames;
         var selected = new List<int>();
@@ -65,7 +75,7 @@ public static class FolderProjection
             selected.Add(0);
         }
 
-        return new FolderListing(rows, selected);
+        return new FolderListing(rows, selected, groups);
     }
 
     /// <summary><paramref name="folder"/> relative to the repository root, with "/" separators ("" for the root itself).</summary>

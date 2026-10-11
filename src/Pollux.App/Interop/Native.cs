@@ -399,6 +399,43 @@ internal static unsafe partial class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool CloseHandle(nint handle);
 
+    // ---- network & removable drives ----
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NETRESOURCEW
+    {
+        public uint dwScope;
+        public uint dwType;
+        public uint dwDisplayType;
+        public uint dwUsage;
+        public char* lpLocalName;
+        public char* lpRemoteName;
+        public char* lpComment;
+        public char* lpProvider;
+    }
+
+    public const uint RESOURCETYPE_DISK = 1;
+    public const uint CONNECT_UPDATE_PROFILE = 1, CONNECT_INTERACTIVE = 8;
+    public const uint NO_ERROR = 0, ERROR_CANCELLED = 1223;
+
+    /// <summary>With CONNECT_INTERACTIVE Windows itself asks for credentials; Pollux never sees them.</summary>
+    [LibraryImport("mpr.dll")]
+    public static partial uint WNetAddConnection3W(nint hwndOwner, NETRESOURCEW* resource, char* password, char* userName, uint flags);
+
+    [LibraryImport("mpr.dll")]
+    public static partial uint WNetCancelConnection2W(char* name, uint flags, [MarshalAs(UnmanagedType.Bool)] bool force);
+
+    public const uint GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000;
+    public const uint FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, OPEN_EXISTING = 3;
+    public const uint FSCTL_LOCK_VOLUME = 0x90018, FSCTL_DISMOUNT_VOLUME = 0x90020;
+    public const uint IOCTL_STORAGE_MEDIA_REMOVAL = 0x2D4804, IOCTL_STORAGE_EJECT_MEDIA = 0x2D4808;
+
+    [LibraryImport("kernel32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    public static partial nint CreateFileW(string fileName, uint access, uint share, nint security, uint disposition, uint flags, nint template);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool DeviceIoControl(nint device, uint code, void* input, uint inputSize, void* output, uint outputSize, out uint returned, nint overlapped);
+
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool IsWindow(nint hwnd);

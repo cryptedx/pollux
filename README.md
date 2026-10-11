@@ -20,6 +20,17 @@ It is made for developers who work in VS Code and with agentic coding tools.
 | **Command palette** | `Ctrl+Shift+P` runs any command. All keys can be remapped in `keybindings.json` (VS Code format) or on the Settings page |
 | **Embedded terminal** | `Ctrl+ö` toggles a PowerShell, pwsh or cmd panel (ConPTY + xterm.js) that opens in the active folder. `Ctrl+Alt+T` opens Windows Terminal instead |
 | **Copy & move queue** | `F5`/`F6`, paste and drag & drop all run in a Pollux queue. A progress bar in the status bar shows speed and lets you pause, resume or cancel. Conflicts ask *Replace / Keep both / Skip* (optionally for the whole job) or follow a fixed rule. Partial files are removed if you cancel. The classic Windows dialogs are still available as a setting (`files.operationEngine`) |
+| **Folder Search** | `Ctrl+Shift+F` searches the current folder and its subfolders by name (`*.ext`), text content, date (`after:7d`) and size (`size>1mb`). Results stream in; `Ctrl+Enter` shows one in its folder |
+| **Undo & redo** | `Ctrl+Z` / `Ctrl+Y` undo and redo renames, new files and folders, copy, move, paste, drag & drop and deletes to the Recycle Bin. Undo refuses, with the reason, when the disk changed meanwhile |
+| **View modes** | Details, Tiles or Large Icons per Tab (`Ctrl+Alt+1/2/3`) with Windows thumbnails for the visible entries. Optional columns for Created, Attributes and Extension, and grouping by Type or Modified date |
+| **Selection** | `Ctrl+Shift+A` selects none and `Ctrl+I` inverts the selection; select or deselect by wildcard pattern (`*.log;*.tmp`) from the command palette |
+| **Batch rename** | `Ctrl+M` renames the selection with find/replace (plain or regex), case changes and numbering, e.g. `{name}_{n:000}{ext}`, with a live preview |
+| **Links** | Create a shortcut (.lnk), symbolic link or junction for the selection, here or in the other Pane. Targets show as a tooltip |
+| **Zip** | Compress the selection to a zip, or extract a zip to a new folder or here, in the background with a cancellable progress toast. Extraction never overwrites files |
+| **Folder sizes** | `Alt+S` calculates the size of every folder in the listing, so folders can be sorted by size |
+| **Compare & sync** | `Ctrl+Alt+D` marks what differs between both Panes (only left, only right, newer, older, differs). Sync copies new and newer items to the other Pane after a confirmation and never deletes |
+| **Drives** | Map network drives, disconnect them, or eject removable and optical drives from the sidebar's Drives section or the command palette |
+| **Recycle Bin** | Browse the Recycle Bin as a location with original name, place and date. Restore entries to where they came from, or delete them permanently or empty the bin (both ask first) |
 | **Preview pane** | `Alt+P` shows the selection next to the panes: code with highlighting, images, PDFs, hex for binaries and a summary for folders. It updates while you arrow through the list |
 | **Quick Look** | `Space` previews the selection: images, code with syntax highlighting (Monaco), PDFs, a hex view for binaries, and a summary for folders |
 | **Notes** | Plain Markdown files edited with Monaco, so VS Code keys work, including multi-cursor. Notes are saved automatically and named after their first line. Tags come from `#tags` or front matter. `Win+Alt+N` creates a new note from anywhere |
@@ -29,7 +40,7 @@ It is made for developers who work in VS Code and with agentic coding tools.
 | **Inbox** | Treat the Desktop as an Inbox: hide its icons, then sort it into `Documents\Inbox\<category>` (with a preview first) |
 | **App updates** | A `winget upgrade` list where you pick which updates to install, either normally or as admin. Automatic checks are opt-in |
 | **Status bar** | CPU, GPU, VRAM, RAM and free space on the current drive. It refreshes only while a window is visible |
-| **Git aware** | Shows the current branch in the path bar and in Quick Look |
+| **Git aware** | Shows the current branch in the path bar and in Quick Look. Git status letters appear only in **Trusted Folders** (covering their subfolders; network locations cannot be trusted): click *Trust this folder* in the path bar or edit `files.trustedFolders`. Elsewhere only the branch is shown, read without running git |
 | **Hand-offs** | Open in VS Code (`Ctrl+Shift+E`), open in the GitHub Copilot app (configurable command) and copy paths (plain, quoted or with `/`) |
 | **Win+E** | Optional: open Pollux instead of Explorer with Win+E |
 
@@ -43,6 +54,18 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 Pollux is copied to `%LocalAppData%\Programs\Pollux` and gets a Start menu shortcut. To remove it, run `uninstall.ps1` from that folder (add `-RemoveData` to also delete settings, state and the Clipboard History; notes are kept). If you turned on the `Win+V` takeover, `uninstall.ps1` also restores Windows' clipboard history setting to what it was before, even if Pollux was force-closed.
+
+To install for all users instead (Program Files; useful where the Admin Instance is a real security boundary), run from an elevated PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -AllUsers
+```
+
+`uninstall.ps1` removes either install.
+
+### Verifying a download
+
+Each release lists `SHA256SUMS` and carries build attestations. Compare `(Get-FileHash .\Pollux-win-x64.zip).Hash` with the matching line, and check the provenance with `gh attestation verify .\Pollux-win-x64.zip --repo <owner>/<repo>`. See [SECURITY.md](SECURITY.md).
 
 ## Configuration
 
@@ -68,6 +91,10 @@ Pollux.exe --clipboard             open the Clipboard Stack
 Pollux.exe --background            start in the tray only (used for autostart)
 Pollux.exe --quit                  stop the background process
 ```
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the security model (network, privileges, stored data), the latest security review with open findings, and recommendations for use on a corporate machine.
 
 ## Build
 

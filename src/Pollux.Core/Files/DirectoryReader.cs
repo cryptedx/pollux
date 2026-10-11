@@ -69,21 +69,22 @@ public static class DirectoryReader
             var info = new FileInfo(path);
             if (info.Exists)
             {
-                return new FileEntry(info.Name, info.FullName, false, info.Length, info.LastWriteTime, info.Attributes);
+                return new FileEntry(info.Name, info.FullName, false, info.Length, info.LastWriteTime, info.Attributes, info.CreationTime);
             }
 
             var dir = new DirectoryInfo(path);
-            return dir.Exists ? new FileEntry(dir.Name, dir.FullName, true, 0, dir.LastWriteTime, dir.Attributes) : null;
+            return dir.Exists ? new FileEntry(dir.Name, dir.FullName, true, 0, dir.LastWriteTime, dir.Attributes, dir.CreationTime) : null;
         }
         catch (IOException) { return null; }
         catch (UnauthorizedAccessException) { return null; }
     }
 
-    private static FileEntry Transform(ref FileSystemEntry e) => new(
+    internal static FileEntry Transform(ref FileSystemEntry e) => new(
         e.FileName.ToString(),
         e.ToFullPath(),
         e.IsDirectory,
         e.IsDirectory ? 0 : e.Length,
         e.LastWriteTimeUtc.LocalDateTime,
-        e.Attributes);
+        e.Attributes,
+        e.CreationTimeUtc.LocalDateTime);
 }

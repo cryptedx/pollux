@@ -230,7 +230,8 @@ public static class ShellParser
 
         if (i >= tokens.Count)
         {
-            return null;
+            // A bare "env" (with only assignments) lists the environment: it is a command of its own.
+            return tokens.Any(t => t.Equals("env", StringComparison.OrdinalIgnoreCase)) ? new SimpleCommand("env", [], "env") : null;
         }
 
         var raw = tokens[i];

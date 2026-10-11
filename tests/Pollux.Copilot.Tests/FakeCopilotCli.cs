@@ -10,7 +10,7 @@ namespace Pollux.Copilot.Tests;
 /// pre-tool-use hook (<c>hooks.invoke</c>) and answers "hook: " + the client's JSON result; "autopilot" goes idle at an Autopilot continuation
 /// boundary before its answer and the final idle. Agent Mode changes (<c>session.mode.set</c>) are applied and announced
 /// with <c>session.mode_changed</c>; Permission Modes are applied, except that a session whose id contains "policy" is under
-/// an organization policy that disables bypass permissions: Allow All is refused (with <c>session.managed_settings_enforced</c>). a session id containing "forcedsandbox" is under an organization that requires the sandbox (<c>session.sandbox.getEnforcementStatus</c>). <c>session.getMessages</c> returns one earlier question and answer. "tool start" reports two tool starts (the second by a sub-agent). A session id containing "norules" refuses the CLI deny rules (<c>session.permissions.configure</c>). Every request is appended to
+/// an organization policy that disables bypass permissions: Allow All is refused (with <c>session.managed_settings_enforced</c>). a session id containing "forcedsandbox" is under an organization that requires the sandbox (<c>session.sandbox.getEnforcementStatus</c>). <c>session.getMessages</c> returns one earlier question and answer. "tool start" reports two tool starts (the second by a sub-agent). A session id containing "norules" refuses the CLI deny rules (<c>session.permissions.configure</c>). A session id containing "unreadablesettings" answers <c>session.managedSettings.get</c> with a JSON-RPC error; one containing "sandboxrefused" answers <c>session.options.update</c> (the sandbox switch) with one. Every request is appended to
 /// <c>requests.jsonl</c> next to the script (<see cref="Requests"/>).
 /// </summary>
 internal static class FakeCopilotCli
@@ -170,6 +170,9 @@ internal static class FakeCopilotCli
                 ? { bypassPermissionsDisabled: true, failClosed: false, deviceManaged: false, serverManaged: true, managedKeys: ['permissions'],
                     source: 'server', settings: { permissions: { disableBypassPermissionsMode: 'disable' } } }
                 : { bypassPermissionsDisabled: false, failClosed: false, deviceManaged: false, serverManaged: false, managedKeys: [], source: 'none' };
+            const fails = (msg.method === 'session.managedSettings.get' && String(p.sessionId).includes('unreadablesettings'))
+              || (msg.method === 'session.options.update' && String(p.sessionId).includes('sandboxrefused'));
+            if (fails && msg.id !== undefined) { send({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: msg.method + ' failed' } }); continue; }
             if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, result });
             if (after) setTimeout(after, 5);
             if (msg.method === 'session.send') setTimeout(() => onSend(p), 10);

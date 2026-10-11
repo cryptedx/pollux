@@ -11,6 +11,9 @@ public sealed class Transfers
     /// <summary>Raised (on a worker thread) when a job is added, changes state or makes progress.</summary>
     public event Action<TransferJob>? Changed;
 
+    /// <summary>Raised (on a worker thread) once per job that ran, after it ended (completed, cancelled or failed).</summary>
+    public event Action<TransferJob>? Finished;
+
     public IReadOnlyList<TransferJob> Jobs
     {
         get { lock (_gate) return _jobs.ToList(); }
@@ -78,6 +81,7 @@ public sealed class Transfers
             }
 
             await TransferRunner.RunAsync(next.Job, next.Ask, CancellationToken.None).ConfigureAwait(false);
+            Finished?.Invoke(next.Job);
         }
     }
 }

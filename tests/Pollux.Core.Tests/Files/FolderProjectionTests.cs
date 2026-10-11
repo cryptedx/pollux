@@ -147,4 +147,18 @@ public sealed class FolderProjectionTests
     [DataRow(@"C:\src", @"C:\", "src")]
     public void RepoRelative(string folder, string root, string expected) =>
         Assert.AreEqual(expected, FolderProjection.RepoRelative(folder, root));
+
+    [TestMethod]
+    public void ComputedFolderSizesTakePartInSizeSort()
+    {
+        var settings = new PolluxSettings();
+        settings.Files.SortBy = SortColumn.Size;
+        settings.Files.SortDescending = true;
+        var sizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase) { [Folder + "\\big"] = 500, [Folder + "\\small"] = 5 };
+
+        var l = FolderProjection.Project([D("small"), D("big"), D("none")], Folder, settings, null, null, [], null, folderSizes: sizes);
+
+        CollectionAssert.AreEqual(new[] { "big", "small", "none" }, Names(l));
+        Assert.AreEqual(500, l.Rows[0].Entry.Size);
+    }
 }

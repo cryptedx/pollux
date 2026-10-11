@@ -2,21 +2,36 @@
 .SYNOPSIS
   Installs Pollux for the current user. No admin rights needed.
 .DESCRIPTION
-  Copies the published app to %LocalAppData%\Programs\Pollux, creates a Start menu shortcut
+  With -AllUsers (needs an elevated PowerShell) Pollux goes to %ProgramFiles%\Pollux with an all-users
+  Start menu shortcut instead, so the Admin Instance runs a binary only administrators can change
+  (docs/adr/0008). Pollux is not started afterwards in this mode (it would inherit the elevation);
+  start it from the Start menu. Remove either install with uninstall.ps1.
+  Per-user: copies the published app to %LocalAppData%\Programs\Pollux, creates a Start menu shortcut
   and (optionally) a desktop shortcut. Pollux registers its own autostart on first launch
   (Settings > Startup > Start with Windows).
 .EXAMPLE
   .\install.ps1                       # installs from the folder this script is in (release zip)
   .\install.ps1 -Source ..\artifacts\win-x64
+  .\install.ps1 -AllUsers            # per-machine, run from an elevated PowerShell
 #>
 param(
     [string]$Source = $PSScriptRoot,
     [switch]$DesktopShortcut,
-    [switch]$NoStart
+    [switch]$NoStart,
+    [switch]$AllUsers
 )
 
 $ErrorActionPreference = 'Stop'
-$target = Join-Path $env:LOCALAPPDATA 'Programs\Pollux'
+if ($AllUsers) {
+    $isAdmin = $false
+    try { $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { }
+    if (-not $isAdmin) { throw '-AllUsers requires an elevated PowerShell (Run as administrator).' }
+    $target = Join-Path $env:ProgramFiles 'Pollux'
+    $startMenu = [Environment]::GetFolderPath('CommonPrograms')
+} else {
+    $target = Join-Path $env:LOCALAPPDATA 'Programs\Pollux'
+    $startMenu = [Environment]::GetFolderPath('Programs')
+}
 $exe = Join-Path $Source 'Pollux.exe'
 if (-not (Test-Path $exe)) { throw "Pollux.exe not found in $Source. Pass -Source <publish folder>." }
 
@@ -45,8 +60,12 @@ function New-Shortcut([string]$Path) {
     $s.Save()
 }
 
-New-Shortcut (Join-Path ([Environment]::GetFolderPath('Programs')) 'Pollux.lnk')
-if ($DesktopShortcut) { New-Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Pollux.lnk') }
+New-Shortcut (Join-Path $startMenu 'Pollux.lnk')
+if ($DesktopShortcut) {
+    $desktop = if ($AllUsers) { [Environment]::GetFolderPath('CommonDesktopDirectory') } else { [Environment]::GetFolderPath('Desktop') }
+    New-Shortcut (Join-Path $desktop 'Pollux.lnk')
+}
 
 Write-Host 'Pollux installed. Start menu: Pollux.'
-if (-not $NoStart) { Start-Process (Join-Path $target 'Pollux.exe') }
+if ($AllUsers) { Write-Host 'Per-machine install: start Pollux from the Start menu (not from this elevated shell).' }
+elseif (-not $NoStart) { Start-Process (Join-Path $target 'Pollux.exe') }

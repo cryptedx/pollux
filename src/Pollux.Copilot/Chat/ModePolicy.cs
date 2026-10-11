@@ -13,6 +13,9 @@ public sealed record ModePolicy(string? AssistedBlocked = null, string? AllowAll
     public const string BlockedByOrganization = "Blocked by your organization's Copilot policy.";
     public const string BlockedUndetermined = "Blocked because your organization's Copilot policy could not be checked.";
 
+    /// <summary>The CLI refused the mode without naming a policy (e.g. the Assisted judge model is not available to the account).</summary>
+    public const string RefusedByCli = "The Copilot CLI refused to switch to it.";
+
     /// <summary>No mode is blocked.</summary>
     public static ModePolicy None { get; } = new();
 
