@@ -81,7 +81,10 @@ public sealed partial class WorkflowTests
     public void TheForgejoPublishWorkflowPinsItsActionsToo()
     {
         // publish-github.yml holds GH_PUBLISH_TOKEN, the most privileged token on the release path.
-        var text = File.ReadAllText(Path.Combine(RepoFiles.Root, ".forgejo", "workflows", "publish-github.yml"));
+        // The public GitHub copy leaves out .forgejo/ (publicignore); Forgejo's CI checks it.
+        var path = Path.Combine(RepoFiles.Root, ".forgejo", "workflows", "publish-github.yml");
+        if (!File.Exists(path)) Assert.Inconclusive(".forgejo/ is not part of the public copy.");
+        var text = File.ReadAllText(path);
         var uses = UsesLine().Matches(text).Select(m => m.Groups[1].Value).ToList();
         Assert.IsNotEmpty(uses);
         foreach (var reference in uses)
