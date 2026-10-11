@@ -107,7 +107,7 @@ dotnet publish src/Pollux.App -c Release -p:Platform=x64 -r win-x64 -o artifacts
 
 `Pollux.Core` has no Windows dependency, so its tests also run on macOS and Linux. Pushing a tag `v*` builds release zips for x64 and ARM64.
 
-Domain language: [GLOSSARY.md](GLOSSARY.md). Decisions: [docs/adr](docs/adr). Spec and tickets: [.scratch/v1-core](.scratch/v1-core).
+Domain language: [GLOSSARY.md](GLOSSARY.md). Decisions: [docs/adr](docs/adr).
 
 ## Third-party code
 
@@ -116,3 +116,7 @@ Domain language: [GLOSSARY.md](GLOSSARY.md). Decisions: [docs/adr](docs/adr). Sp
 | Windows App SDK (WinUI 3, WebView2) | MIT / Microsoft | UI |
 | [Monaco Editor](https://github.com/microsoft/monaco-editor) 0.57.0 | MIT | Notes editor, code preview (bundled in `Assets/web/monaco`, loaded from disk only) |
 | [xterm.js](https://github.com/xtermjs/xterm.js) 6.0.0 + addon-fit | MIT | Embedded terminal (bundled in `Assets/web/xterm`) |
+
+## License
+
+Pollux is released under the [MIT License](LICENSE). Bundled third-party code keeps its own license (see above).

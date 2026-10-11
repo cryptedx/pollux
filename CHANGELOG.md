@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.4 — 2026-10-11
+
+### Added
+
+- Pollux is open source under the MIT License (`LICENSE`).
+
 ## 1.5.3 — 2026-10-11
 
 ### Fixed
