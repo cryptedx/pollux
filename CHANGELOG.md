@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.2 — 2026-10-11
+
+### Fixed
+
+- The x64 and ARM64 downloads are built again; 1.4.1 was published without them. No other changes.
+
 ## 1.4.1 — 2026-10-11
 
 ### Added

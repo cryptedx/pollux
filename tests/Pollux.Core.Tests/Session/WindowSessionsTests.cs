@@ -55,7 +55,8 @@ public sealed class WindowSessionsTests
         var saved = new List<WindowSession> { Saved("/a") };
         saved[0].Panes[0].ActiveTab = 1;
         var s = WindowSessions.ForNewWindow(true, true, saved, 0, true, "/folder/file.txt", Dir);
-        CollectionAssert.AreEqual(new[] { "/folder", "/a", "/two" }, s.Panes[0].Tabs.Select(t => t.Location).ToArray());
+        // Path.GetDirectoryName gives "\folder" on Windows and "/folder" elsewhere.
+        CollectionAssert.AreEqual(new[] { Path.GetDirectoryName("/folder/file.txt"), "/a", "/two" }, s.Panes[0].Tabs.Select(t => t.Location).ToArray());
         Assert.AreEqual(0, s.Panes[0].ActiveTab);
     }
 }
