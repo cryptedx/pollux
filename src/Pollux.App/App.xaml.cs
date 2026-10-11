@@ -83,7 +83,7 @@ public partial class App : Application
     internal bool CopilotAvailable => CopilotAvailability.IsAvailable(Services.Settings.Copilot, MainWindow.IsElevated);
     internal SearchService Search { get; private set; } = null!;
     internal ClipboardService ClipboardService { get; private set; } = null!;
-    internal List<string> RecentCommands { get; } = [];
+    internal RecentCommands RecentCommands { get; } = new();
     internal MainWindow? LastActive { get; set; }
 
     /// <summary>All copies and moves of all windows, run one after another.</summary>
@@ -120,34 +120,7 @@ public partial class App : Application
         StartupLog.Configure(Services.Paths.LogsDirectory, Services.Settings.App.StartupLog);
         StartupLog.Mark("services");
 
-        var background = _args.Contains("--background") || _args.Contains("--notes") || _args.Contains("--downloads") || _args.Contains("--clipboard");
-        var target = TargetFromArgs(_args);
-        if (!background || target is not null)
-        {
-            var w = OpenWindow(restore: true, navigateTo: target);
-            w.Activate();
-            StartupLog.Mark("windowActivated");
-        }
-        else if (Services.Settings.KeepsResident)
-        {
-            // Pre-create a hidden window so the first Win+E/tray open is instant.
-            var w = OpenWindow(restore: true);
-            w.HideWindow();
-        }
-
-        if (_args.Contains("--notes")) Dispatcher.TryEnqueue(() => ShowNotes(newNote: true));
-        if (ValueAfter(_args, "--workspace") is { } ws) Dispatcher.TryEnqueue(() => _windows.FirstOrDefault()?.Execute("workspace.open:" + ws));
-        if (CommandsFromArgs(_args) is { Count: > 0 } startCommands)
-        {
-            // Same as for a running instance: commands go to the (first) window once it exists.
-            Dispatcher.TryEnqueue(() =>
-            {
-                var target = _windows.FirstOrDefault(w => !w.IsHidden) ?? OpenNewWindow();
-                foreach (var c in startCommands) target.Execute(c);
-            });
-        }
-        if (_args.Contains("--downloads")) Dispatcher.TryEnqueue(() => ShowDownloadsStack());
-        if (_args.Contains("--clipboard")) Dispatcher.TryEnqueue(() => ShowClipboardStack());
+        Dispatch(LaunchRequest.Parse(_args, Directory.Exists, File.Exists), coldStart: true);
 
         // Everything below is not needed for the first frame.
         Dispatcher.TryEnqueue(DispatcherQueuePriority.Low, StartBackgroundServices);
@@ -294,87 +267,79 @@ public partial class App : Application
         var requested = Stopwatch.GetTimestamp();
         string[] args = [];
         if (e.Kind == ExtendedActivationKind.Launch && e.Data is Windows.ApplicationModel.Activation.ILaunchActivatedEventArgs l)
-        {
             args = CommandLine.Split(l.Arguments);
-            // The redirected command line starts with the program path.
-            if (args.Length > 0 && args[0].EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) args = args[1..];
+
+        Dispatcher.TryEnqueue(() => Dispatch(LaunchRequest.Parse(args, Directory.Exists, File.Exists), coldStart: false, requested));
+    }
+
+    /// <summary>
+    /// Acts on a command line. The two entry points interpret the same flags with different precedence (kept as it was):
+    /// a cold start opens or hides its window, then runs every flag it was given (notes, workspace, commands, downloads, clipboard);
+    /// a second launch redirected to this resident process does only the first flag that applies (quit, background, downloads,
+    /// clipboard, notes, workspace, commands) and otherwise opens a window. "--quit" is only honoured when redirected.
+    /// </summary>
+    private void Dispatch(LaunchRequest r, bool coldStart, long requested = 0)
+    {
+        if (coldStart)
+        {
+            if (!r.WantsNoWindow || r.Target is not null)
+            {
+                var w = OpenWindow(restore: true, navigateTo: r.Target);
+                w.Activate();
+                StartupLog.Mark("windowActivated");
+            }
+            else if (Services.Settings.KeepsResident)
+            {
+                // Pre-create a hidden window so the first Win+E/tray open is instant.
+                var w = OpenWindow(restore: true);
+                w.HideWindow();
+            }
+
+            if (r.Notes) Dispatcher.TryEnqueue(() => ShowNotes(newNote: true));
+            if (r.Workspace is { } ws) Dispatcher.TryEnqueue(() => _windows.FirstOrDefault()?.Execute("workspace.open:" + ws));
+            if (r.Commands.Count > 0)
+            {
+                // Same as for a running instance: commands go to the (first) window once it exists.
+                Dispatcher.TryEnqueue(() =>
+                {
+                    var commandWindow = _windows.FirstOrDefault(w => !w.IsHidden) ?? OpenNewWindow();
+                    foreach (var c in r.Commands) commandWindow.Execute(c);
+                });
+            }
+            if (r.Downloads) Dispatcher.TryEnqueue(() => ShowDownloadsStack());
+            if (r.Clipboard) Dispatcher.TryEnqueue(() => ShowClipboardStack());
+            return;
         }
 
-        Dispatcher.TryEnqueue(() =>
+        if (r.Quit) { Quit(); return; }
+        if (r.Background) return;
+        if (r.Downloads) { ShowDownloadsStack(); return; }
+        if (r.Clipboard) { ShowClipboardStack(); return; }
+        if (r.Notes) { ShowNotes(newNote: true); return; }
+        if (r.Workspace is { } workspace)
         {
-            if (args.Contains("--quit")) { Quit(); return; }
-            if (args.Contains("--background")) return;
-            if (args.Contains("--downloads")) { ShowDownloadsStack(); return; }
-            if (args.Contains("--clipboard")) { ShowClipboardStack(); return; }
-            if (args.Contains("--notes")) { ShowNotes(newNote: true); return; }
-            if (ValueAfter(args, "--workspace") is { } workspace)
-            {
-                OpenNewWindow().Execute("workspace.open:" + workspace);
-                return;
-            }
+            OpenNewWindow().Execute("workspace.open:" + workspace);
+            return;
+        }
 
-            if (CommandsFromArgs(args) is { Count: > 0 } commands)
-            {
-                var target = (LastActive is { IsHidden: false } la && _windows.Contains(la) ? la : _windows.FirstOrDefault(w => !w.IsHidden)) ?? OpenNewWindow();
-                foreach (var c in commands) target.Execute(c);
-                return;
-            }
+        if (r.Commands.Count > 0)
+        {
+            var commandWindow = (LastActive is { IsHidden: false } la && _windows.Contains(la) ? la : _windows.FirstOrDefault(w => !w.IsHidden)) ?? OpenNewWindow();
+            foreach (var c in r.Commands) commandWindow.Execute(c);
+            return;
+        }
 
-            OpenNewWindow(TargetFromArgs(args));
-            StartupLog.Warm("window", requested);
-        });
-    }
-
-    private static string? ValueAfter(string[] args, string flag)
-    {
-        var i = Array.IndexOf(args, flag);
-        return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
-    }
-
-    /// <summary>"--command id[,id…]" runs commands in the frontmost window (scripting and automation).</summary>
-    private static List<string> CommandsFromArgs(string[] args)
-    {
-        var i = Array.IndexOf(args, "--command");
-        return i >= 0 && i + 1 < args.Length ? args[i + 1].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList() : [];
-    }
-
-    private static string? TargetFromArgs(string[] args)
-    {
-        var path = args.Where((a, i) => !a.StartsWith("--", StringComparison.Ordinal) && (i == 0 || (args[i - 1] != "--command" && args[i - 1] != "--workspace"))).FirstOrDefault();
-        return path is not null && (Directory.Exists(path) || File.Exists(path)) ? Path.GetFullPath(path) : null;
+        OpenNewWindow(r.Target);
+        StartupLog.Warm("window", requested);
     }
 
     // ---------------- windows ----------------
 
     private MainWindow OpenWindow(bool restore, string? navigateTo = null)
     {
-        WindowSession session;
-        var restored = false;
-        if (restore && Services.Settings.App.RestoreWindows && Services.Session.Windows.Count > _windows.Count)
-        {
-            session = Services.Session.Windows[_windows.Count];
-            restored = true;
-        }
-        else
-        {
-            session = new WindowSession { DualPane = Services.Settings.Tabs.DualPaneOnStart };
-            if (Services.Session.Windows.Count > 0)
-            {
-                var last = Services.Session.Windows[^1];
-                session.Width = last.Width;
-                session.Height = last.Height;
-            }
-        }
-
-        if (navigateTo is not null)
-        {
-            var dir = Directory.Exists(navigateTo) ? navigateTo : Path.GetDirectoryName(navigateTo)!;
-            var tabs = session.Panes[session.ActivePane].Tabs;
-            // A fresh window opened for a folder shows just that folder; a restored one keeps its tabs.
-            if (!restored) tabs.Clear();
-            tabs.Insert(0, new TabSession { Location = dir });
-            session.Panes[session.ActivePane].ActiveTab = 0;
-        }
+        var session = WindowSessions.ForNewWindow(
+            restore, Services.Settings.App.RestoreWindows, Services.Session.Windows, _windows.Count,
+            Services.Settings.Tabs.DualPaneOnStart, navigateTo, Directory.Exists);
 
         var w = new MainWindow(this, session);
         _windows.Add(w);
@@ -486,22 +451,11 @@ public partial class App : Application
     internal void ShowUpdates() => ExtraFeatures.ShowUpdates(this);
 
     /// <summary>Palette commands of the Clipboard History work only while it is on (otherwise they toast "Clipboard History is off").</summary>
-    private void WireClipboardCommands(bool on)
-    {
-        ClipboardCommands.ClearHistory = on ? ClipboardService.ClearHistory : null;
-        ClipboardCommands.SetPaused = on ? ClipboardService.SetPaused : null;
-    }
+    internal bool ClipboardCommandsOn { get; private set; }
+
+    private void WireClipboardCommands(bool on) => ClipboardCommandsOn = on;
 
     private void OpenClipboardStack() => ExtraFeatures.ShowClipboardStack(this, ClipboardService.History, ClipboardService.ReadImage, ClipboardService.SaveSoon);
-
-    internal void NoteCommand(string id)
-    {
-        RecentCommands.Remove(id);
-        RecentCommands.Insert(0, id);
-        if (RecentCommands.Count > 10) RecentCommands.RemoveAt(10);
-    }
-
-    internal IEnumerable<CommandDefinition> ExtraCommands() => ExtraFeatures.Commands;
 
     internal bool ExecuteAppCommand(string id, MainWindow window) => ExtraFeatures.Execute(this, id, window);
 }

@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.4.1 — 2026-10-11
+
+### Added
+
+- A Settings button (gear) in the title bar opens the Settings page. Its tooltip shows the current shortcut (`Ctrl+,` by default).
+- The title bar shows the running version and short commit hash next to the logo (`1.4.0 · f69a251`). Click it to copy `1.4.0+f69a251`, for example for a bug report.
+
+### Fixed
+
+- Clicking between Panes no longer flashes a white focus frame around the selected entry. The frame still shows when you move focus with the keyboard.
+
+## 1.4.0 — 2026-10-10
+
+### Added
+
+- **Copilot** (opt-in, Settings › Copilot): GitHub Copilot inside Pollux, built on the GitHub Copilot SDK. The bundled Copilot CLI runs as a separate process and is the only part that talks to GitHub; Pollux itself stays offline. It signs in with your existing `copilot login` / `gh auth` credentials, follows your organization's Copilot policies and is not available in the Admin Instance.
+- **Copilot Panel** (`Ctrl+Shift+I`, *Copilot: Toggle Panel*): a Chat next to the Panes with streamed Markdown, diffs, approvals, model picker and premium-request quota. Chats are saved and can be resumed.
+- **Context**: the active Pane's folder and selection go along as removable chips; add more with `@` mentions or drag and drop. Copilot selection actions are in the command palette.
+- **Agent Mode** (Interactive, Plan, Autopilot) and **Permission Mode** (Manual, Assisted, Allow All) per Chat, plus a per-Chat sandbox toggle where supported.
+- **Guard Rules** always apply: blocked and always-ask shell commands, protected secrets and Pollux's own data, a Working Folder, and a Tainted Chat marker once untrusted content (Downloads, Inbox, Temp, archives, web) is involved. Every tool call is recorded in the Chat's Action Log with decision and reason.
+- Copilot tools for Pollux: read folders and selection, run file operations and manage Bookmarks, behind the Guard Rules.
+- Settings for a Copilot-only proxy, extra CA certificates and a custom CLI path.
+
+### Fixed
+
+- The default shortcuts of *Downloads: Show Downloads Stack* (`Ctrl+Shift+O`) and *Notes: New Note* (`Ctrl+Alt+M`) work; they were shown in Settings but never bound.
+- Every command run from the command palette moves to the top of its list, including Notes, Inbox, Clipboard and Copilot selection actions.
+- Switching Tabs no longer carries the selection of the closed or moved Tab over to the next one.
+
 ## 1.3.0 — 2026-10-09
 
 ### Added

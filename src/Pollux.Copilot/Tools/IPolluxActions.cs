@@ -57,11 +57,25 @@ public static class PaneTargets
         _ => null,
     };
 
-    /// <summary>The snapshot a target names, or null when there is none (e.g. "other" in a single-Pane window).</summary>
-    public static PaneSnapshot? Resolve(IReadOnlyList<PaneSnapshot> panes, string target) => target switch
+    /// <summary>
+    /// The index (0 = left, 1 = right) of the Pane a target names, given the active Pane's index and whether the window is
+    /// dual; null when there is none ("right" or "other" in a single-Pane window). "left" is always Pane 0; any other
+    /// target (including "active") is the active Pane.
+    /// </summary>
+    public static int? ResolveIndex(string target, int activeIndex, bool dual) => target switch
     {
-        Active => panes.FirstOrDefault(p => p.Active),
-        Other => panes.FirstOrDefault(p => !p.Active),
-        _ => panes.FirstOrDefault(p => p.Pane == target),
+        Left => 0,
+        Right => dual ? 1 : null,
+        Other => dual ? 1 - activeIndex : null,
+        _ => activeIndex,
     };
+
+    /// <summary>The snapshot a target names, or null when there is none (e.g. "other" in a single-Pane window, or an unknown target).</summary>
+    public static PaneSnapshot? Resolve(IReadOnlyList<PaneSnapshot> panes, string target)
+    {
+        ArgumentNullException.ThrowIfNull(panes);
+        var active = panes.ToList().FindIndex(p => p.Active);
+        if (active < 0 || target is not (Active or Other or Left or Right)) return null;
+        return ResolveIndex(target, active, panes.Count > 1) is { } i && i < panes.Count ? panes[i] : null;
+    }
 }

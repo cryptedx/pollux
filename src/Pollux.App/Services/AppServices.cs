@@ -136,12 +136,12 @@ internal sealed class AppServices
 
         try
         {
-            return KeybindingMap.Build(CommandCatalog.All, ReadUserKeybindingsStrict());
+            return CommandRegistry.Keybindings(Settings.Copilot, ReadUserKeybindingsStrict());
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException)
         {
             SettingsError = "keybindings.json: " + ex.Message;
-            return KeybindingMap.Build(CommandCatalog.All, []);
+            return CommandRegistry.Keybindings(Settings.Copilot, []);
         }
     }
 

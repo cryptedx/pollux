@@ -1,6 +1,6 @@
 using Pollux.Core.Navigation;
 
-namespace Pollux.App.ViewModels;
+namespace Pollux.Core.Session;
 
 /// <summary>A Tab: a location with its own history, Filter and remembered selection.</summary>
 public sealed class TabModel(string location)

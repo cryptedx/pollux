@@ -3,4 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pollux.Core.Tests" />
+  </ItemGroup>
 </Project>

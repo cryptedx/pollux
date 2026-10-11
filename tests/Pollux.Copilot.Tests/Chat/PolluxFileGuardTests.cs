@@ -141,6 +141,42 @@ public sealed class PolluxFileGuardTests
     }
 
     [TestMethod]
+    public async Task TwoIdenticalCallsInParallelAreAskedOncePerCallAtEveryCheckpoint()
+    {
+        var approvals = Approvals();
+
+        // Both calls reach the hook before either reaches the tool: one yes covers only the first.
+        var hookA = approvals.PreToolUseAsync(Hook("pollux_move", MoveOut));
+        approvals.Answer(_asked.Single().Id, ApprovalAnswer.AllowOnce);
+        Assert.AreEqual("allow", (await hookA)!.PermissionDecision);
+        var hookB = approvals.PreToolUseAsync(Hook("pollux_move", MoveOut));
+        Assert.HasCount(2, _asked, "The second call's hook asks; the first call's yes does not cover it.");
+        approvals.Answer(_asked[1].Id, ApprovalAnswer.AllowOnce);
+        Assert.AreEqual("allow", (await hookB)!.PermissionDecision);
+
+        Assert.IsInstanceOfType<PermissionDecisionApproveOnce>(await approvals.DecideAsync(Permission("pollux_move", MoveOut)));
+        Assert.IsInstanceOfType<PermissionDecisionApproveOnce>(await approvals.DecideAsync(Permission("pollux_move", MoveOut)));
+        Assert.IsNull(await approvals.AuthorizeAsync(Call("pollux_move", MoveOut), TestContext.CancellationToken));
+        Assert.IsNull(await approvals.AuthorizeAsync(Call("pollux_move", MoveOut), TestContext.CancellationToken));
+        Assert.HasCount(2, _asked, "Each call is asked once across hook, permission request and tool.");
+    }
+
+    [TestMethod]
+    public async Task OneYesPassesThePermissionRequestOfOnlyOneCall()
+    {
+        var approvals = Approvals();
+        var hook = approvals.PreToolUseAsync(Hook("pollux_move", MoveOut));
+        approvals.Answer(_asked.Single().Id, ApprovalAnswer.AllowOnce);
+        await hook;
+
+        Assert.IsInstanceOfType<PermissionDecisionApproveOnce>(await approvals.DecideAsync(Permission("pollux_move", MoveOut)));
+        var second = approvals.DecideAsync(Permission("pollux_move", MoveOut));
+        Assert.HasCount(2, _asked, "A second permission request for the same call is a second call: it asks.");
+        approvals.Answer(_asked[1].Id, ApprovalAnswer.Deny);
+        Assert.IsInstanceOfType<PermissionDecisionReject>(await second);
+    }
+
+    [TestMethod]
     public async Task TheHookDeniesABlockedFileToolCallWithoutAsking()
     {
         var output = await Approvals().PreToolUseAsync(Hook("pollux_recycle", """{"paths":["C:\\work\\.env"]}"""));

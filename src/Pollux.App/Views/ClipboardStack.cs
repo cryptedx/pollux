@@ -28,6 +28,7 @@ internal sealed partial class ClipboardStack : Window
     private const int MaxPreviewChars = 100_000;
     private readonly ClipboardHistory _history;
     private readonly Func<Clip, byte[]?> _readImage;
+    private ClipStackRows? _rows;
     private readonly Action _changed;
     private readonly Grid _root = new();
     private readonly TextBox _search = new() { PlaceholderText = "search Clips…  @app narrows to one app", FontSize = 14, BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
@@ -209,26 +210,16 @@ internal sealed partial class ClipboardStack : Window
 
     private void Render(string? selectId = null)
     {
-        var hits = ClipSearch.Find(_history.All, _search.Text);
+        var rows = ClipStackRows.Build(_history, _search.Text, MaxRows);
+        _rows = rows;
         var now = DateTime.Now;
-        var items = new List<FrameworkElement>();
-        var kept = hits.Where(c => c.Kept).ToList();
-        var recent = hits.Where(c => !c.Kept).Take(MaxRows).ToList();
-        if (kept.Count > 0)
-        {
-            items.Add(SectionHeader("Kept Clips"));
-            foreach (var clip in kept) items.Add(Row(clip, now));
-            if (recent.Count > 0) items.Add(SectionHeader("Clipboard History"));
-        }
-
-        foreach (var clip in recent) items.Add(Row(clip, now));
+        var items = rows.Rows.Select(r => r.Clip is { } clip ? (FrameworkElement)Row(clip, now) : SectionHeader(r.Header!)).ToList();
         _list.ItemsSource = items;
-        var select = items.FindIndex(i => i.Tag is Clip c && (selectId is null || c.Id == selectId));
-        if (select < 0) select = items.FindIndex(i => i.Tag is Clip);
+        var select = rows.IndexToSelect(selectId);
         _list.SelectedIndex = select;
         if (select >= 0) _list.ScrollIntoView(items[select]);
         else ShowPreview();
-        _footer.Text = $"{hits.Count} Clips · Enter paste · Shift+Enter copy · Ctrl+K keep/release · F2 title · Alt+↑/↓ move · Del delete";
+        _footer.Text = $"{rows.HitCount} Clips · Enter paste · Shift+Enter copy · Ctrl+K keep/release · F2 title · Alt+↑/↓ move · Del delete";
     }
 
     private static ListViewItem SectionHeader(string text) => new()
@@ -525,39 +516,17 @@ internal sealed partial class ClipboardStack : Window
 
     private void MoveSelection(int step)
     {
-        if (_list.ItemsSource is not List<FrameworkElement> items || items.Count == 0) return;
-        var i = _list.SelectedIndex;
-        for (var n = 0; n < items.Count; n++)
-        {
-            i = (i + step + items.Count) % items.Count;
-            if (items[i].Tag is Clip)
-            {
-                _list.SelectedIndex = i;
-                _list.ScrollIntoView(items[i]);
-                return;
-            }
-        }
+        if (_list.ItemsSource is not List<FrameworkElement> items || _rows is not { } rows) return;
+        var i = rows.Move(_list.SelectedIndex, step);
+        if (i < 0) return;
+        _list.SelectedIndex = i;
+        _list.ScrollIntoView(items[i]);
     }
 
     /// <summary>The Clip to select after <paramref name="id"/> is deleted: the next one, else the previous one.</summary>
-    private string? NeighbourId(string id)
-    {
-        if (_list.ItemsSource is not List<FrameworkElement> items) return null;
-        var clips = items.Select(i => i.Tag).OfType<Clip>().ToList();
-        var index = clips.FindIndex(c => c.Id == id);
-        if (index + 1 < clips.Count) return clips[index + 1].Id;
-        return index > 0 ? clips[index - 1].Id : null;
-    }
+    private string? NeighbourId(string id) => _rows?.NeighbourId(id);
 
-    private int IndexOfKept(string id)
-    {
-        for (var i = 0; i < _history.Kept.Count; i++)
-        {
-            if (_history.Kept[i].Id == id) return i;
-        }
-
-        return -1;
-    }
+    private int IndexOfKept(string id) => ClipStackRows.IndexOfKept(_history, id);
 
     private void Changed(string? selectId)
     {

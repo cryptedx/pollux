@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
@@ -104,15 +103,31 @@ public sealed class ToolApprovals(
         public string Logged(string why) => (TimedOut ? NoAnswer + " " : Allowed ? "Allowed once. " : "Declined by the user. ") + why;
     }
 
+    /// <summary>How a checkpoint judged a tool call, before it becomes that checkpoint's own answer.</summary>
+    private enum Ruling
+    {
+        /// <summary>Left to the Permission Mode (only the hook leaves a call to it).</summary>
+        NoOpinion,
+        Allow,
+        Deny,
+    }
+
+    /// <param name="Reason">Allow: the Guard Rules' reason the user said yes to (shown by the hook); Deny: told to the model.</param>
+    private readonly record struct Judgement(Ruling Ruling, string Reason)
+    {
+        public static Judgement NoOpinion => new(Ruling.NoOpinion, "");
+
+        public static Judgement Allow(string reason = "") => new(Ruling.Allow, reason);
+
+        public static Judgement Deny(string reason) => new(Ruling.Deny, reason);
+    }
+
+    private const string AllowedEarlier = "Allowed for this Chat earlier.";
+
     private readonly ConcurrentDictionary<string, OpenPrompt> _pending = new();
-    private readonly ConcurrentDictionary<string, bool> _allowedForChat = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, int> _approvedByHook = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, int> _seenByHook = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, int> _approvedFileCalls = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, int> _loggedFileCalls = new(StringComparer.Ordinal);
+    private readonly ToolCallLedger _ledger = new();
     private readonly ChatGuard _guard = guard ?? new ChatGuard();
     private readonly TimeSpan _timeout = answerTimeout ?? DefaultAnswerTimeout;
-    private readonly Dictionary<string, Queue<int>> _awaitingMode = new(StringComparer.Ordinal);
     private int _next;
 
     /// <summary>The Chat's Guard Rules.</summary>
@@ -171,6 +186,10 @@ public sealed class ToolApprovals(
         foreach (var id in _pending.Keys) Answer(id, ApprovalAnswer.Deny);
     }
 
+    // ---- The checkpoints. Each climbs the same ladder: Plan mode and the Guard Rules' block (Screen), then its own rungs
+    // (a yes the user gave earlier, Allow for this Chat, asking the user), writing the call to the Action Log on the way.
+    // Each judges into a Judgement that it turns into its own answer. ----
+
     /// <summary>
     /// The pre-tool-use hook: Plan mode and the Guard Rules before every tool call, whatever the Permission Mode. Returns
     /// "deny" for a blocked call, asks for an always-ask call ("allow" or "deny" from the user's answer), and null (no
@@ -179,38 +198,42 @@ public sealed class ToolApprovals(
     public async Task<PreToolUseHookOutput?> PreToolUseAsync(PreToolUseHookInput input)
     {
         ArgumentNullException.ThrowIfNull(input);
-        Count(_seenByHook, CanonicalArguments(input.ToolArgs is { } args ? args.GetRawText() : null));
-        if (FileOperation.Tools.ContainsKey(input.ToolName))
+        _ledger.HookSaw(input.ToolArgs is { } args ? args.GetRawText() : null);
+        var judgement = FileOperation.Tools.ContainsKey(input.ToolName)
+            ? await PreFileToolUseAsync(input).ConfigureAwait(false)
+            : await PreOtherToolUseAsync(input).ConfigureAwait(false);
+        return judgement.Ruling switch
         {
-            return await PreFileToolUseAsync(input).ConfigureAwait(false);
-        }
+            Ruling.Allow => new() { PermissionDecision = "allow", PermissionDecisionReason = "Approved by the user: " + judgement.Reason },
+            Ruling.Deny => Deny(judgement.Reason),
+            _ => null,
+        };
+    }
 
+    private async Task<Judgement> PreOtherToolUseAsync(PreToolUseHookInput input)
+    {
         var request = GuardRequests.FromHook(input.ToolName, input.ToolArgs);
-        if (ReadOnlyReason is { } plan && !PlanTools.Contains(input.ToolName))
+        if (Screen(!PlanTools.Contains(input.ToolName), () => _guard.Evaluate(request),
+                (decision, by, reason) => Record(Entry(input.ToolName, request), decision, by, reason), out var verdict) is { } denied)
         {
-            Record(input.ToolName, request, ActionDecision.Blocked, ActionDecider.Mode, plan);
-            return Deny(plan);
+            return denied;
         }
 
-        var verdict = _guard.Evaluate(request);
-        switch (verdict.Decision)
+        var key = Key(request);
+        if (verdict.Decision == GuardDecision.Ask)
         {
-            case GuardDecision.Deny:
-                Record(input.ToolName, request, ActionDecision.Blocked, ActionDecider.GuardRule, verdict.Reason);
-                return Deny(Blocked(verdict.Reason));
-            case GuardDecision.Ask:
-                var reply = await AskForAsync(Prompt(input.ToolName, request, verdict.Reason), CancellationToken.None).ConfigureAwait(false);
-                Record(input.ToolName, request, reply.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, reply.Logged(verdict.Reason));
-                if (!reply.Allowed) return Deny(reply.Refusal);
+            var reply = await AskForAsync(Prompt(input.ToolName, request, verdict.Reason), CancellationToken.None).ConfigureAwait(false);
+            Record(Entry(input.ToolName, request), reply.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, reply.Logged(verdict.Reason));
+            if (!reply.Allowed) return Judgement.Deny(reply.Refusal);
 
-                Count(_approvedByHook, Key(request));
-                _guard.Proceeds(request);
-                return Approved(verdict.Reason);
-            default:
-                _guard.Proceeds(request); // the Permission Mode may still ask; a refused read leaves the Chat Tainted (errs on the safe side)
-                Await(Key(request), Record(input.ToolName, request, ActionDecision.Allowed, ActionDecider.Mode, ModeReason()));
-                return null;
+            _ledger.Approve(key, Checkpoint.Hook);
+            _guard.Proceeds(request);
+            return Judgement.Allow(verdict.Reason);
         }
+
+        _guard.Proceeds(request); // the Permission Mode may still ask; a refused read leaves the Chat Tainted (errs on the safe side)
+        _ledger.AwaitDecision(key, Record(Entry(input.ToolName, request), ActionDecision.Allowed, ActionDecider.Mode, ModeReason()));
+        return Judgement.NoOpinion;
     }
 
     /// <summary>
@@ -223,7 +246,7 @@ public sealed class ToolApprovals(
     public bool ToolStarted(string tool, string? arguments)
     {
         ArgumentNullException.ThrowIfNull(tool);
-        if (Take(_seenByHook, CanonicalArguments(arguments))) return true;
+        if (_ledger.StartedWasSeen(arguments)) return true;
 
         JsonElement? args = null;
         try
@@ -238,55 +261,8 @@ public sealed class ToolApprovals(
         {
         }
 
-        Record(tool, GuardRequests.FromHook(tool, args), ActionDecision.Allowed, ActionDecider.Mode, HookDidNotRun);
+        Record(Entry(tool, GuardRequests.FromHook(tool, args)), ActionDecision.Allowed, ActionDecider.Mode, HookDidNotRun);
         return false;
-    }
-
-    /// <summary>The arguments as compact JSON with the properties of every object in name order; "" for none.</summary>
-    internal static string CanonicalArguments(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return "";
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind == JsonValueKind.Null) return "";
-            var buffer = new ArrayBufferWriter<byte>();
-            using (var writer = new Utf8JsonWriter(buffer))
-            {
-                WriteCanonical(writer, doc.RootElement);
-            }
-
-            return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
-        }
-        catch (JsonException)
-        {
-            return json.Trim();
-        }
-    }
-
-    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement element)
-    {
-        switch (element.ValueKind)
-        {
-            case JsonValueKind.Object:
-                writer.WriteStartObject();
-                foreach (var property in element.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal))
-                {
-                    writer.WritePropertyName(property.Name);
-                    WriteCanonical(writer, property.Value);
-                }
-
-                writer.WriteEndObject();
-                break;
-            case JsonValueKind.Array:
-                writer.WriteStartArray();
-                foreach (var item in element.EnumerateArray()) WriteCanonical(writer, item);
-                writer.WriteEndArray();
-                break;
-            default:
-                element.WriteTo(writer);
-                break;
-        }
     }
 
 #pragma warning disable GHCP001 // Experimental SDK API, pinned together with the CLI version (ADR 0005).
@@ -298,64 +274,61 @@ public sealed class ToolApprovals(
     public async Task<PermissionDecision> DecideAsync(PermissionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (request is PermissionRequestCustomTool custom && FileOperation.FromToolCall(custom.ToolName, custom.Args) is { } operation)
-        {
-            return await DecideFileToolAsync(PolluxToolCall.Of(operation)).ConfigureAwait(false);
-        }
+        var judgement = request is PermissionRequestCustomTool custom && FileOperation.FromToolCall(custom.ToolName, custom.Args) is { } operation
+            ? await DecideFileToolAsync(PolluxToolCall.Of(operation)).ConfigureAwait(false)
+            : await DecideOtherAsync(request).ConfigureAwait(false);
+        return judgement.Ruling == Ruling.Allow ? PermissionDecision.ApproveOnce() : PermissionDecision.Reject(judgement.Reason);
+    }
+#pragma warning restore GHCP001
 
+    private async Task<Judgement> DecideOtherAsync(PermissionRequest request)
+    {
         var guarded = GuardRequests.FromPermission(request);
         var key = Key(guarded);
-        if (ReadOnlyReason is { } plan && guarded.Kind is not (ToolKind.Read or ToolKind.Url))
+        if (Screen(guarded.Kind is not (ToolKind.Read or ToolKind.Url), () => _guard.Evaluate(guarded),
+                (decision, by, reason) => Settle(_ledger.TakeAwaiting(key), Entry(request.Kind, guarded), decision, by, reason), out var verdict) is { } denied)
         {
-            Settle(request.Kind, guarded, TakeAwaiting(key), ActionDecision.Blocked, ActionDecider.Mode, plan);
-            return PermissionDecision.Reject(plan);
+            return denied;
         }
 
-        var verdict = _guard.Evaluate(guarded);
-        if (verdict.Decision == GuardDecision.Deny)
-        {
-            Settle(request.Kind, guarded, TakeAwaiting(key), ActionDecision.Blocked, ActionDecider.GuardRule, verdict.Reason);
-            return PermissionDecision.Reject(Blocked(verdict.Reason));
-        }
-
-        if (Take(_approvedByHook, key))
+        if (_ledger.TakeApproved(key, Checkpoint.Permission))
         {
             _guard.Proceeds(guarded);
-            return PermissionDecision.ApproveOnce();
+            return Judgement.Allow();
         }
 
         var modeAsks = verdict.Decision == GuardDecision.Allow;
-        if (modeAsks && _allowedForChat.ContainsKey(key))
+        if (modeAsks && _ledger.IsAllowedForChat(key))
         {
-            Settle(request.Kind, guarded, TakeAwaiting(key), ActionDecision.Allowed, ActionDecider.User, "Allowed for this Chat earlier.");
+            Settle(_ledger.TakeAwaiting(key), Entry(request.Kind, guarded), ActionDecision.Allowed, ActionDecider.User, AllowedEarlier);
             _guard.Proceeds(guarded);
-            return PermissionDecision.ApproveOnce();
+            return Judgement.Allow();
         }
 
+        // Asked by the Permission Mode (Manual), or by the Guard Rules when the hook did not ask already.
         var prompt = Describe("", request) with
         {
             Reason = modeAsks ? null : verdict.Reason,
             Paths = guarded.Paths.Count > 0 ? guarded.Paths : null,
             CanAllowForChat = modeAsks,
         };
-        var awaiting = TakeAwaiting(key);
+        var awaiting = _ledger.TakeAwaiting(key);
         var why = modeAsks ? ModeReason() : verdict.Reason;
         var reply = await AskForAsync(prompt, CancellationToken.None).ConfigureAwait(false);
         Remember(key, reply);
-        Settle(request.Kind, guarded, awaiting, reply.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, Logged(reply, why));
-        if (!reply.Allowed) return PermissionDecision.Reject(reply.Refusal);
+        Settle(awaiting, Entry(request.Kind, guarded), reply.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, Logged(reply, why));
+        if (!reply.Allowed) return Judgement.Deny(reply.Refusal);
 
         _guard.Proceeds(guarded);
-        return PermissionDecision.ApproveOnce();
+        return Judgement.Allow();
     }
-#pragma warning restore GHCP001
 
     // ---- Pollux file tools (copy, move, rename, recycle bin, new folder, Bookmark) ----
     // Three places see such a call: the pre-tool-use hook, the CLI's permission request (when the Permission Mode asks),
     // and the tool itself right before Pollux acts (AuthorizeAsync, which runs whatever the CLI did). Whichever asks the
-    // Guard Rules' question first records the user's yes for that one call; the later places use it instead of asking again,
-    // and the tool consumes it. Likewise the call is logged once: by the hook, settled by the permission request, or by
-    // the tool itself when neither saw it.
+    // Guard Rules' question first records the user's yes for that one call; each later place lets it pass once instead of
+    // asking again, and the tool consumes it. So two identical calls side by side need two yeses, one each. Likewise the
+    // call is logged once: by the hook, settled by the permission request, or by the tool itself when neither saw it.
 
     /// <summary>
     /// The Guard Rules on a Pollux file tool call right before Pollux performs it: null when it may go ahead (allowed, or
@@ -364,149 +337,103 @@ public sealed class ToolApprovals(
     public async Task<string?> AuthorizeAsync(PolluxToolCall toolCall, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(toolCall);
-        var key = FileKey(toolCall);
-        if (ReadOnlyReason is { } plan)
+        var judgement = await AuthorizeFileToolAsync(toolCall, cancellationToken).ConfigureAwait(false);
+        return judgement.Ruling == Ruling.Allow ? null : judgement.Reason;
+    }
+
+    private async Task<Judgement> AuthorizeFileToolAsync(PolluxToolCall toolCall, CancellationToken cancellationToken)
+    {
+        var key = Key(toolCall);
+        if (Screen(true, () => Evaluate(toolCall), (decision, by, reason) => Record(Entry(toolCall), decision, by, reason), out var verdict) is { } denied)
         {
-            RecordFile(toolCall, ActionDecision.Blocked, ActionDecider.Mode, plan);
-            return plan;
+            return denied;
         }
 
-        var verdict = Evaluate(toolCall);
-        if (verdict.Decision == GuardDecision.Deny)
+        if (verdict.Decision == GuardDecision.Allow || _ledger.TakeApproved(key, Checkpoint.Tool))
         {
-            RecordFile(toolCall, ActionDecision.Blocked, ActionDecider.GuardRule, verdict.Reason);
-            return Blocked(verdict.Reason);
-        }
-
-        if (verdict.Decision == GuardDecision.Allow || Take(_approvedFileCalls, key))
-        {
-            if (Take(_loggedFileCalls, key)) TakeAwaiting(key);
-            else RecordFile(toolCall, ActionDecision.Allowed, ActionDecider.Mode, ModeReason());
-            return null;
+            if (_ledger.TakeLogged(key)) _ledger.TakeAwaiting(key);
+            else Record(Entry(toolCall), ActionDecision.Allowed, ActionDecider.Mode, ModeReason());
+            return Judgement.Allow();
         }
 
         var reply = await AskForAsync(FilePrompt(toolCall, verdict.Reason, false), cancellationToken).ConfigureAwait(false);
-        RecordFile(toolCall, reply.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, reply.Logged(verdict.Reason));
-        return reply.Allowed ? null : reply.Refusal;
+        Record(Entry(toolCall), reply.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, reply.Logged(verdict.Reason));
+        return reply.Allowed ? Judgement.Allow() : Judgement.Deny(reply.Refusal);
     }
 
-    private async Task<PreToolUseHookOutput?> PreFileToolUseAsync(PreToolUseHookInput input)
+    private async Task<Judgement> PreFileToolUseAsync(PreToolUseHookInput input)
     {
         // Invalid arguments: the tool refuses the call itself and tells Copilot why.
-        if (FileOperation.FromToolCall(input.ToolName, input.ToolArgs) is not { } operation) return null;
+        if (FileOperation.FromToolCall(input.ToolName, input.ToolArgs) is not { } operation) return Judgement.NoOpinion;
         var toolCall = PolluxToolCall.Of(operation);
-        var key = FileKey(toolCall);
-        if (ReadOnlyReason is { } plan)
+        var key = Key(toolCall);
+        if (Screen(true, () => Evaluate(toolCall), (decision, by, reason) => Record(Entry(toolCall), decision, by, reason), out var verdict) is { } denied)
         {
-            RecordFile(toolCall, ActionDecision.Blocked, ActionDecider.Mode, plan);
-            return Deny(plan);
-        }
-
-        var verdict = Evaluate(toolCall);
-        if (verdict.Decision == GuardDecision.Deny)
-        {
-            RecordFile(toolCall, ActionDecision.Blocked, ActionDecider.GuardRule, verdict.Reason);
-            return Deny(Blocked(verdict.Reason));
+            return denied;
         }
 
         if (verdict.Decision == GuardDecision.Allow)
         {
-            Await(key, RecordFile(toolCall, ActionDecision.Allowed, ActionDecider.Mode, ModeReason()));
-            Count(_loggedFileCalls, key);
-            return null;
+            _ledger.AwaitDecision(key, Record(Entry(toolCall), ActionDecision.Allowed, ActionDecider.Mode, ModeReason()));
+            _ledger.Logged(key);
+            return Judgement.NoOpinion;
         }
 
-        var reply = await ApproveFileCallAsync(toolCall, verdict.Reason).ConfigureAwait(false);
-        if (reply is not { } asked) return Approved(verdict.Reason); // already asked for this call
-        RecordFile(toolCall, asked.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, asked.Logged(verdict.Reason));
-        if (!asked.Allowed) return Deny(asked.Refusal);
-        Count(_loggedFileCalls, key);
-        return Approved(verdict.Reason);
+        return await AskGuardRulesOnceAsync(toolCall, key, verdict.Reason, Checkpoint.Hook).ConfigureAwait(false);
     }
 
-#pragma warning disable GHCP001 // Experimental SDK API, pinned together with the CLI version (ADR 0005).
-    private async Task<PermissionDecision> DecideFileToolAsync(PolluxToolCall toolCall)
+    private async Task<Judgement> DecideFileToolAsync(PolluxToolCall toolCall)
     {
-        var key = FileKey(toolCall);
-        if (ReadOnlyReason is { } plan)
+        var key = Key(toolCall);
+        if (Screen(true, () => Evaluate(toolCall), (decision, by, reason) => SettleFile(toolCall, key, decision, by, reason), out var verdict) is { } denied)
         {
-            SettleFile(toolCall, key, ActionDecision.Blocked, ActionDecider.Mode, plan);
-            return PermissionDecision.Reject(plan);
+            return denied;
         }
 
-        var verdict = Evaluate(toolCall);
-        if (verdict.Decision == GuardDecision.Deny)
+        if (verdict.Decision == GuardDecision.Ask) return await AskGuardRulesOnceAsync(toolCall, key, verdict.Reason, Checkpoint.Permission).ConfigureAwait(false);
+
+        // The Permission Mode asks (Manual). Unlike DecideOtherAsync, the hook's entry is taken only once the user answered.
+        if (_ledger.IsAllowedForChat(key))
         {
-            SettleFile(toolCall, key, ActionDecision.Blocked, ActionDecider.GuardRule, verdict.Reason);
-            return PermissionDecision.Reject(Blocked(verdict.Reason));
+            SettleFile(toolCall, key, ActionDecision.Allowed, ActionDecider.User, AllowedEarlier);
+            return Judgement.Allow();
         }
 
-        if (verdict.Decision == GuardDecision.Ask)
-        {
-            var reply = await ApproveFileCallAsync(toolCall, verdict.Reason).ConfigureAwait(false);
-            if (reply is not { } asked) return PermissionDecision.ApproveOnce(); // the hook asked already and logged it
-            RecordFile(toolCall, asked.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, asked.Logged(verdict.Reason));
-            if (!asked.Allowed) return PermissionDecision.Reject(asked.Refusal);
-            Count(_loggedFileCalls, key);
-            return PermissionDecision.ApproveOnce();
-        }
-
-        // The Permission Mode asks (Manual).
-        if (_allowedForChat.ContainsKey(key))
-        {
-            SettleFile(toolCall, key, ActionDecision.Allowed, ActionDecider.User, "Allowed for this Chat earlier.");
-            return PermissionDecision.ApproveOnce();
-        }
-
-        var modeReply = await AskForAsync(FilePrompt(toolCall, null, true), CancellationToken.None).ConfigureAwait(false);
-        Remember(key, modeReply);
-        SettleFile(toolCall, key, modeReply.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, Logged(modeReply, ModeReason()));
-        return modeReply.Allowed ? PermissionDecision.ApproveOnce() : PermissionDecision.Reject(modeReply.Refusal);
+        var reply = await AskForAsync(FilePrompt(toolCall, null, true), CancellationToken.None).ConfigureAwait(false);
+        Remember(key, reply);
+        SettleFile(toolCall, key, reply.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, Logged(reply, ModeReason()));
+        return reply.Allowed ? Judgement.Allow() : Judgement.Deny(reply.Refusal);
     }
-#pragma warning restore GHCP001
 
     /// <summary>
-    /// Asks the Guard Rules' question once per call (never remembered for the Chat): the user's reply, or null when the
-    /// user already said yes to this call (in the hook or the permission request).
+    /// The Guard Rules' question on a Pollux file tool call, from the hook or the permission request: asked once per call
+    /// (never remembered for the Chat) and logged; the user's yes waits for the tool (<see cref="AuthorizeAsync"/>).
+    /// Allowed without asking when the user already said yes to this call at an earlier checkpoint (a yes passes
+    /// <paramref name="at"/> for one call only).
     /// </summary>
-    private async Task<Reply?> ApproveFileCallAsync(PolluxToolCall toolCall, string reason)
+    private async Task<Judgement> AskGuardRulesOnceAsync(PolluxToolCall toolCall, string key, string reason, Checkpoint at)
     {
-        var key = FileKey(toolCall);
-        if (_approvedFileCalls.ContainsKey(key)) return null;
+        if (_ledger.PassApproved(key, at)) return Judgement.Allow(reason); // already asked for this call, and logged
         var reply = await AskForAsync(FilePrompt(toolCall, reason, false), CancellationToken.None).ConfigureAwait(false);
-        if (reply.Allowed) Count(_approvedFileCalls, key);
-        return reply;
+        if (reply.Allowed) _ledger.Approve(key, at);
+        Record(Entry(toolCall), reply.Allowed ? ActionDecision.Asked : ActionDecision.Blocked, ActionDecider.User, reply.Logged(reason));
+        if (!reply.Allowed) return Judgement.Deny(reply.Refusal);
+        _ledger.Logged(key);
+        return Judgement.Allow(reason);
     }
 
     /// <summary>The permission request settles the hook's entry for the file tool call, or logs the call itself; the tool then does not log it again.</summary>
     private void SettleFile(PolluxToolCall toolCall, string key, ActionDecision decision, ActionDecider by, string reason)
     {
-        if (TakeAwaiting(key) is { } id)
+        if (Settle(_ledger.TakeAwaiting(key), Entry(toolCall), decision, by, reason))
         {
-            log?.Update(id, e =>
-            {
-                e.Decision = decision;
-                e.DecidedBy = by;
-                e.Reason = reason;
-            });
-            if (decision == ActionDecision.Blocked) Take(_loggedFileCalls, key);
+            if (decision == ActionDecision.Blocked) _ledger.TakeLogged(key);
         }
-        else
+        else if (decision != ActionDecision.Blocked)
         {
-            RecordFile(toolCall, decision, by, reason);
-            if (decision != ActionDecision.Blocked) Count(_loggedFileCalls, key);
+            _ledger.Logged(key);
         }
     }
-
-    private int? RecordFile(PolluxToolCall toolCall, ActionDecision decision, ActionDecider by, string reason) =>
-        log?.Add(new ActionLogEntry
-        {
-            Tool = toolCall.Tool,
-            Paths = [.. toolCall.Requests.SelectMany(r => r.Paths).Distinct(StringComparer.OrdinalIgnoreCase)],
-            Decision = decision,
-            DecidedBy = by,
-            Reason = reason,
-        }).Id;
 
     /// <summary>The strictest verdict over everything the call reads and writes, with every reason.</summary>
     private GuardVerdict Evaluate(PolluxToolCall toolCall)
@@ -517,8 +444,6 @@ public sealed class ToolApprovals(
         return GuardVerdict.Of(worst, [.. verdicts.Where(v => v.Decision == worst).SelectMany(v => v.Reasons).Distinct(StringComparer.Ordinal)]);
     }
 
-    private static string FileKey(PolluxToolCall toolCall) => toolCall.Tool + "\n" + toolCall.Detail;
-
     private static ToolApprovalRequest FilePrompt(PolluxToolCall toolCall, string? reason, bool canAllowForChat)
     {
         var paths = toolCall.Requests.SelectMany(r => r.Paths).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -526,24 +451,31 @@ public sealed class ToolApprovals(
         return new("", kind, toolCall.Title, toolCall.Detail, null, reason, paths.Count > 0 ? paths : null, canAllowForChat);
     }
 
-    private static void Count(ConcurrentDictionary<string, int> counts, string key) => counts.AddOrUpdate(key, 1, (_, n) => n + 1);
+    // ---- The shared rungs ----
 
-    private static bool Take(ConcurrentDictionary<string, int> counts, string key)
+    /// <summary>
+    /// The first rungs at every checkpoint: Plan mode (when the call <paramref name="changes"/> something), then a block
+    /// of the Guard Rules. Either denies, written to the Action Log through <paramref name="log"/>. Null when neither does;
+    /// <paramref name="verdict"/> is then the Guard Rules' verdict (Ask or Allow) for the checkpoint's own rungs.
+    /// </summary>
+    private Judgement? Screen(bool changes, Func<GuardVerdict> evaluate, Action<ActionDecision, ActionDecider, string> log, out GuardVerdict verdict)
     {
-        while (counts.TryGetValue(key, out var n))
+        verdict = GuardVerdict.Allowed;
+        if (ReadOnlyReason is { } plan && changes)
         {
-            if (n <= 1 ? counts.TryRemove(new KeyValuePair<string, int>(key, n)) : counts.TryUpdate(key, n - 1, n)) return true;
+            log(ActionDecision.Blocked, ActionDecider.Mode, plan);
+            return Judgement.Deny(plan);
         }
 
-        return false;
+        verdict = evaluate();
+        if (verdict.Decision != GuardDecision.Deny) return null;
+        log(ActionDecision.Blocked, ActionDecider.GuardRule, verdict.Reason);
+        return Judgement.Deny(Blocked(verdict.Reason));
     }
 
     private string ModeReason() => permissionMode?.Invoke() is { Length: > 0 } mode ? "Permission Mode " + mode : "Permission Mode";
 
     private static string Blocked(string reason) => "Guard Rules: " + reason;
-
-    private static PreToolUseHookOutput Approved(string reason) =>
-        new() { PermissionDecision = "allow", PermissionDecisionReason = "Approved by the user: " + reason };
 
     /// <summary>How a reply to a prompt of the Permission Mode is logged (it may be "for this Chat").</summary>
     private static string Logged(Reply reply, string why) =>
@@ -551,61 +483,54 @@ public sealed class ToolApprovals(
 
     private void Remember(string key, Reply reply)
     {
-        if (reply.Answer == ApprovalAnswer.AllowForChat) _allowedForChat[key] = true;
+        if (reply.Answer == ApprovalAnswer.AllowForChat) _ledger.AllowForChat(key);
     }
 
-    /// <summary>Adds an entry to the Action Log; returns its id, or null when there is no log.</summary>
-    private int? Record(string tool, ToolRequest request, ActionDecision decision, ActionDecider by, string reason) =>
-        log?.Add(new ActionLogEntry
-        {
-            Tool = tool,
-            Command = request.Kind == ToolKind.Shell ? request.Command : null,
-            Paths = [.. request.Paths],
-            Urls = [.. request.Urls],
-            Decision = decision,
-            DecidedBy = by,
-            Reason = reason,
-        }).Id;
-
-    /// <summary>The permission request settles the hook's entry for the same call (the mode left the decision to it), or is logged itself when the hook did not run.</summary>
-    private void Settle(string tool, ToolRequest request, int? awaiting, ActionDecision decision, ActionDecider by, string reason)
+    /// <summary>The Action Log entry for a tool call, still without its decision.</summary>
+    private static ActionLogEntry Entry(string tool, ToolRequest request) => new()
     {
-        if (log is null) return;
-        if (awaiting is { } id)
-        {
-            log.Update(id, e =>
-            {
-                e.Decision = decision;
-                e.DecidedBy = by;
-                e.Reason = reason;
-            });
-        }
-        else
-        {
-            Record(tool, request, decision, by, reason);
-        }
+        Tool = tool,
+        Command = request.Kind == ToolKind.Shell ? request.Command : null,
+        Paths = [.. request.Paths],
+        Urls = [.. request.Urls],
+    };
+
+    /// <summary>The Action Log entry for a Pollux file tool call, still without its decision.</summary>
+    private static ActionLogEntry Entry(PolluxToolCall toolCall) => new()
+    {
+        Tool = toolCall.Tool,
+        Paths = [.. toolCall.Requests.SelectMany(r => r.Paths).Distinct(StringComparer.OrdinalIgnoreCase)],
+    };
+
+    /// <summary>Adds <paramref name="entry"/> to the Action Log with its decision; returns its id, or null when there is no log.</summary>
+    private int? Record(ActionLogEntry entry, ActionDecision decision, ActionDecider by, string reason)
+    {
+        if (log is null) return null;
+        entry.Decision = decision;
+        entry.DecidedBy = by;
+        entry.Reason = reason;
+        return log.Add(entry).Id;
     }
 
-    /// <summary>The hook's entry <paramref name="id"/> waits for the permission request that may follow for the same call.</summary>
-    private void Await(string key, int? id)
+    /// <summary>
+    /// A later checkpoint settles the hook's entry <paramref name="awaiting"/> for the same call (the mode left the
+    /// decision to it), or logs <paramref name="entry"/> itself when the hook logged none: true when it settled.
+    /// </summary>
+    private bool Settle(int? awaiting, ActionLogEntry entry, ActionDecision decision, ActionDecider by, string reason)
     {
-        if (id is null) return;
-        lock (_awaitingMode)
+        if (awaiting is not { } id)
         {
-            if (!_awaitingMode.TryGetValue(key, out var queue)) _awaitingMode[key] = queue = new Queue<int>();
-            queue.Enqueue(id.Value);
+            Record(entry, decision, by, reason);
+            return false;
         }
-    }
 
-    private int? TakeAwaiting(string key)
-    {
-        lock (_awaitingMode)
+        log?.Update(id, e =>
         {
-            if (!_awaitingMode.TryGetValue(key, out var queue) || queue.Count == 0) return null;
-            var id = queue.Dequeue();
-            if (queue.Count == 0) _awaitingMode.Remove(key);
-            return id;
-        }
+            e.Decision = decision;
+            e.DecidedBy = by;
+            e.Reason = reason;
+        });
+        return true;
     }
 
     private static PreToolUseHookOutput Deny(string reason) => new() { PermissionDecision = "deny", PermissionDecisionReason = reason };
@@ -614,6 +539,12 @@ public sealed class ToolApprovals(
     private static string Key(ToolRequest r) => r.Kind == ToolKind.Shell
         ? "shell\n" + r.Command
         : r.Kind + "\n" + string.Join("\n", r.Paths) + "\n" + string.Join("\n", r.Urls);
+
+    /// <summary>
+    /// What makes two Pollux file tool calls "the same": the tool and its detail. Never equal to a key of a
+    /// <see cref="ToolRequest"/> (those start with the request kind, these with a pollux_ tool name).
+    /// </summary>
+    private static string Key(PolluxToolCall toolCall) => toolCall.Tool + "\n" + toolCall.Detail;
 
     private static ToolApprovalRequest Prompt(string toolName, ToolRequest r, string reason)
     {

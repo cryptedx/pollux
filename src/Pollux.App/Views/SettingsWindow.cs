@@ -325,7 +325,7 @@ internal sealed partial class SettingsWindow : Window
         _content.Children.Add(open);
 
         var keys = _app.Services.Keys;
-        foreach (var c in CommandCatalog.All.Concat(ExtraFeatures.Commands).Where(c => CopilotAvailability.AllowsCommand(c.Id, _app.CopilotAvailable)))
+        foreach (var c in CommandRegistry.Commands(S.Copilot, _app.CopilotAvailable))
         {
             var grid = new Grid { ColumnSpacing = 16, Padding = new Thickness(12, 6, 12, 6), Background = Theme.Brush("PolluxSurfaceBrush"), CornerRadius = new CornerRadius(4), Margin = new Thickness(0, 0, 0, 1) };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -348,22 +348,13 @@ internal sealed partial class SettingsWindow : Window
     {
         if (e.Key == Windows.System.VirtualKey.Tab) return;
         e.Handled = true;
-        var user = _app.Services.ReadUserKeybindings();
+        // Backspace clears the shortcut; any other key (with modifiers) replaces it.
+        var clear = e.Key == Windows.System.VirtualKey.Back;
+        var chord = clear ? null : KeyInput.ToChord(e.Key);
+        if (!clear && chord is null) return;
         var current = _app.Services.Keys.KeyFor(command.Id);
-        if (e.Key == Windows.System.VirtualKey.Back)
-        {
-            if (current is not null) user.Add(new KeybindingEntry(current.Value.ToString().ToLowerInvariant(), "-" + command.Id));
-            box.Text = "";
-            _app.Services.SaveKeybindings(user);
-            return;
-        }
-
-        var chord = KeyInput.ToChord(e.Key);
-        if (chord is null) return;
-        var text = chord.Value.ToString().ToLowerInvariant();
-        if (current is not null) user.Add(new KeybindingEntry(current.Value.ToString().ToLowerInvariant(), "-" + command.Id));
-        user.Add(new KeybindingEntry(text, command.Id, command.When));
-        box.Text = chord.Value.ToString();
+        var user = CommandRegistry.Rebind(_app.Services.ReadUserKeybindings(), command, current, chord);
+        box.Text = chord?.ToString() ?? "";
         _app.Services.SaveKeybindings(user);
     }
 }

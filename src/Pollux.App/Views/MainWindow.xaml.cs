@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Security.Principal;
 using Microsoft.UI;
+using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -9,6 +11,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Pollux.App.Services;
 using Pollux.App.ViewModels;
+using Pollux.Core;
 using Pollux.Copilot.Models;
 using Pollux.Core.Commands;
 using Pollux.Core.Copilot;
@@ -57,6 +60,9 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBar);
+        VersionText.Text = RunningVersion.Label;
+        Root.Loaded += (_, _) => Root.XamlRoot.Changed += (_, _) => UpdateVersionPassthrough();
+        ToolTipService.SetToolTip(VersionText, $"Pollux {RunningVersion.Number}{(RunningVersion.Commit is { } c ? $" ({c})" : "")} · click to copy");
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "pollux.ico"));
         AppWindow.Closing += AppWindow_Closing;
         Closed += (_, _) => Cleanup();
@@ -237,6 +243,29 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
     private void UpdatesBadge_Tapped(object sender, TappedRoutedEventArgs e) => _app.ShowUpdates();
 
+    private void SettingsButton_Click(object sender, RoutedEventArgs e) => _app.ShowSettings();
+
+    private static readonly AppVersion RunningVersion = AppVersion.Parse(
+        typeof(MainWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
+
+    private void VersionText_Tapped(object sender, TappedRoutedEventArgs e)
+    {
+        CopyText(RunningVersion.ToString());
+        ShowToast("Copied " + RunningVersion, 2);
+    }
+
+    // The title bar is a drag region; the version label needs a passthrough rect to receive clicks.
+    private void VersionText_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateVersionPassthrough();
+
+    private void UpdateVersionPassthrough()
+    {
+        if (VersionText.XamlRoot is not { } root || VersionText.ActualWidth == 0) return;
+        var scale = root.RasterizationScale;
+        var b = VersionText.TransformToVisual(null).TransformBounds(new Windows.Foundation.Rect(0, 0, VersionText.ActualWidth, VersionText.ActualHeight));
+        var rect = new RectInt32((int)Math.Round(b.X * scale), (int)Math.Round(b.Y * scale), (int)Math.Ceiling(b.Width * scale), (int)Math.Ceiling(b.Height * scale));
+        InputNonClientPointerSource.GetForWindowId(AppWindow.Id).SetRegionRects(NonClientRegionKind.Passthrough, [rect]);
+    }
+
     // ---------------- settings & theme ----------------
 
     private void OnSettingsChanged()
@@ -268,6 +297,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         StatusBar.Visibility = s.StatusBar.Visible ? Visibility.Visible : Visibility.Collapsed;
         _statsTimer?.SetInterval(TimeSpan.FromSeconds(Math.Max(1, s.StatusBar.RefreshSeconds)));
         PaletteHint.Text = Services.Keys.KeyFor("palette.show")?.ToString() ?? "";
+        ToolTipService.SetToolTip(SettingsButton, Services.Keys.KeyFor("settings.open") is { } key ? $"Settings ({key})" : "Settings");
         ApplyLayout();
         RenderSidebar();
         UpdateStats();
@@ -297,15 +327,10 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
     public void MoveTab(int fromPane, int fromIndex, int toPane, int toIndex)
     {
-        if (fromPane == toPane)
-        {
-            _panes[fromPane].ReorderTab(fromIndex, toIndex);
-            return;
-        }
-
-        var location = _panes[fromPane].DetachTab(fromIndex);
-        _panes[toPane].InsertTab(toIndex, location);
-        SetActivePane(toPane);
+        var from = _panes[fromPane];
+        var to = _panes[toPane];
+        PaneView.EditTabs(from == to ? new[] { from } : new[] { from, to }, () => PaneTabs.Move(from.PaneTabs, fromIndex, to.PaneTabs, toIndex), reload: fromPane != toPane);
+        if (fromPane != toPane) SetActivePane(toPane);
     }
 
     public void OnPaneActivated(PaneView pane)
@@ -643,8 +668,23 @@ internal sealed partial class MainWindow : Window, IPaneHost
     public void Execute(string id)
     {
         if (!CopilotAvailability.AllowsCommand(id, _app.CopilotAvailable)) return;
-        if (SelectionActions.IsSelectionAction(id)) { RunSelectionAction(id); return; }
         var p = Active;
+        var command = CommandRegistry.Parse(id);
+        switch (command.Kind)
+        {
+            case CommandKind.SelectionAction:
+                RunSelectionAction(id);
+                return;
+            case CommandKind.OpenWorkspace:
+                if (Services.Workspaces.Get(command.Workspace) is { } ws) SwitchWorkspace(ws);
+                else ShowToast("No workspace named " + command.Workspace);
+                return;
+            case CommandKind.GoToBookmark:
+                var b = Services.Bookmarks.Flat.ElementAtOrDefault(command.Bookmark - 1);
+                if (b is not null) { if (File.Exists(b.Path)) Shell.Open(b.Path); else p.Navigate(b.Path); }
+                return;
+        }
+
         switch (id)
         {
             case "palette.show": ShowPalette(PaletteMode.Commands); break;
@@ -743,21 +783,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "app.openConfigFolder": Active.Navigate(Services.Paths.ConfigDirectory); break;
             case "app.quit": _app.Quit(); break;
             default:
-                if (id.StartsWith("workspace.open:", StringComparison.Ordinal))
-                {
-                    if (Services.Workspaces.Get(id[15..]) is { } ws) SwitchWorkspace(ws);
-                    else ShowToast("No workspace named " + id[15..]);
-                }
-                else if (id.StartsWith("bookmark.go", StringComparison.Ordinal) && int.TryParse(id[11..], out var n))
-                {
-                    var b = Services.Bookmarks.Flat.ElementAtOrDefault(n - 1);
-                    if (b is not null) { if (File.Exists(b.Path)) Shell.Open(b.Path); else p.Navigate(b.Path); }
-                }
-                else if (!_app.ExecuteAppCommand(id, this))
-                {
-                    ShowToast("Unknown command: " + id);
-                }
-
+                if (!_app.ExecuteAppCommand(id, this)) ShowToast("Unknown command: " + id);
                 break;
         }
     }
@@ -778,10 +804,13 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
     private void SwapPanes()
     {
-        var a = Pane1.ToSession();
-        var b = Pane2.ToSession();
-        Pane1.LoadSession(b);
-        Pane2.LoadSession(a);
+        var a = Pane1.PaneTabs.ToSession();
+        var b = Pane2.PaneTabs.ToSession();
+        PaneView.EditTabs([Pane1, Pane2], () =>
+        {
+            Pane1.PaneTabs.Load(b);
+            Pane2.PaneTabs.Load(a);
+        });
     }
 
     /// <summary>Shows a location in the pane that is not active, turning dual pane on if needed.</summary>
@@ -943,11 +972,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
                 if (IsHidden) ShowWindow();
                 var all = new CheckBox { Content = "Do this for all conflicts in this job" };
                 var info = new TextBlock { FontFamily = Mono, FontSize = 12, TextWrapping = TextWrapping.Wrap };
-                info.Text = c.IsDirectory
-                    ? $"A file named \"{Path.GetFileName(c.TargetPath)}\" is in the way of a folder."
-                    : $"{Path.GetFileName(c.TargetPath)} already exists in {Path.GetDirectoryName(c.TargetPath)}\n\n" +
-                      $"new:      {Format.Size(c.SourceSize),10}  {c.SourceModified:yyyy-MM-dd HH:mm}{(c.SourceModified > c.TargetModified ? "  (newer)" : "")}\n" +
-                      $"existing: {Format.Size(c.TargetSize),10}  {c.TargetModified:yyyy-MM-dd HH:mm}{(c.TargetModified > c.SourceModified ? "  (newer)" : "")}";
+                info.Text = Core.Operations.TransferBoard.ConflictText(c);
                 var content = new StackPanel { Spacing = 12 };
                 content.Children.Add(info);
                 content.Children.Add(all);
@@ -1013,45 +1038,32 @@ internal sealed partial class MainWindow : Window, IPaneHost
         UpdateTransfersUi();
         foreach (var p in _panes)
         {
-            var f = p.Folder;
-            if (f is null) continue;
-            if (string.Equals(f, job.Request.TargetDirectory, StringComparison.OrdinalIgnoreCase) || job.Request.Sources.Any(s => string.Equals(Path.GetDirectoryName(s), f, StringComparison.OrdinalIgnoreCase))) p.Refresh();
+            if (p.Folder is { } f && Core.Operations.TransferBoard.Affects(job, f)) p.Refresh();
         }
 
         if (!_announced.Add(job.Id) || _app.LastActive != this) return;
-        var errors = job.Errors.Count;
-        ShowToast(job.State switch
-        {
-            Core.Operations.TransferState.Completed when errors == 0 => $"✓ {job.Title}",
-            Core.Operations.TransferState.Completed => $"⚠ {job.Title}: {errors} problem(s) — see transfers",
-            Core.Operations.TransferState.Cancelled => $"Cancelled: {job.Title}",
-            _ => $"✗ {job.Title}: {job.Error}",
-        }, errors > 0 || job.State == Core.Operations.TransferState.Failed ? 6 : 3);
+        var (text, seconds) = Core.Operations.TransferBoard.FinishedToast(job);
+        ShowToast(text, seconds);
     }
 
     private void UpdateTransfersUi()
     {
         var jobs = _app.Transfers.Jobs;
-        var active = jobs.Where(j => !j.IsFinished).ToList();
-        var visible = jobs.Count > 0 && (active.Count > 0 || jobs.Any(j => j.Errors.Count > 0 || j.State == Core.Operations.TransferState.Failed));
-        TransfersBadge.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        if (active.FirstOrDefault() is { } current)
+        TransfersBadge.Visibility = Core.Operations.TransferBoard.BadgeVisible(jobs) ? Visibility.Visible : Visibility.Collapsed;
+        if (jobs.FirstOrDefault(j => !j.IsFinished) is { } current)
         {
             var p = current.Progress;
             TransfersBar.Value = p.Fraction;
             TransfersBar.IsIndeterminate = p.TotalFiles == 0;
             TransfersBar.ShowPaused = current.State == Core.Operations.TransferState.Paused;
-            var queued = active.Count > 1 ? $" +{active.Count - 1}" : "";
-            TransfersText.Text = current.State == Core.Operations.TransferState.Paused
-                ? $"paused {p.Fraction:P0}{queued}"
-                : $"{(current.Request.Kind == Core.Operations.TransferKind.Copy ? "copy" : "move")} {p.Fraction:P0} · {Format.Size((long)p.BytesPerSecond)}/s{queued}";
         }
         else
         {
             TransfersBar.Value = 1;
             TransfersBar.IsIndeterminate = false;
-            TransfersText.Text = "⚠ problems";
         }
+
+        TransfersText.Text = Core.Operations.TransferBoard.StatusText(jobs);
 
         if (TransfersFlyout.IsOpen) RefreshTransfersPanel();
     }
@@ -1068,11 +1080,10 @@ internal sealed partial class MainWindow : Window, IPaneHost
         public required TextBlock Status { get; init; }
         public required TextBlock Current { get; init; }
         public Button? Pause { get; init; }
-        public Core.Operations.TransferState State { get; init; }
-        public int Errors { get; init; }
     }
 
     private readonly Dictionary<int, TransferRow> _transferRows = [];
+    private readonly Dictionary<int, Core.Operations.TransferBoard.RowSnapshot> _shownRows = [];
 
     /// <summary>
     /// Updates the open panel in place. Rebuilding it on every progress tick replaced the buttons under the mouse,
@@ -1081,7 +1092,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
     private void RefreshTransfersPanel()
     {
         var jobs = VisibleTransferJobs();
-        if (jobs.Count != _transferRows.Count || jobs.Any(j => !_transferRows.TryGetValue(j.Id, out var r) || r.State != j.State || r.Errors != j.Errors.Count))
+        if (Core.Operations.TransferBoard.NeedsRebuild(_shownRows, jobs))
         {
             RenderTransfersPanel();
             return;
@@ -1090,21 +1101,13 @@ internal sealed partial class MainWindow : Window, IPaneHost
         foreach (var job in jobs) FillRow(_transferRows[job.Id], job);
     }
 
-    private List<Core.Operations.TransferJob> VisibleTransferJobs() => _app.Transfers.Jobs.AsEnumerable().Reverse().Take(8).ToList();
+    private List<Core.Operations.TransferJob> VisibleTransferJobs() => Core.Operations.TransferBoard.VisibleJobs(_app.Transfers.Jobs);
 
     private static void FillRow(TransferRow row, Core.Operations.TransferJob job)
     {
         var p = job.Progress;
         row.Bar.Value = job.State == Core.Operations.TransferState.Completed ? 1 : p.Fraction;
-        row.Status.Text = job.State switch
-        {
-            Core.Operations.TransferState.Completed => $"done · {p.TotalFiles} files · {Format.Size(p.TotalBytes)}",
-            Core.Operations.TransferState.Failed => "failed: " + job.Error,
-            Core.Operations.TransferState.Cancelled => "cancelled",
-            Core.Operations.TransferState.Queued => "waiting",
-            Core.Operations.TransferState.Paused => $"paused · {Format.Size(p.DoneBytes)} of {Format.Size(p.TotalBytes)}",
-            _ => $"{p.DoneFiles}/{p.TotalFiles} files · {Format.Size(p.DoneBytes)} of {Format.Size(p.TotalBytes)} · {Format.Size((long)p.BytesPerSecond)}/s",
-        };
+        row.Status.Text = Core.Operations.TransferBoard.RowStatus(job);
         row.Current.Text = job.IsFinished ? "" : p.CurrentFile;
         row.Current.Visibility = row.Current.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -1113,6 +1116,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
     {
         TransfersPanel.Children.Clear();
         _transferRows.Clear();
+        _shownRows.Clear();
         foreach (var job in VisibleTransferJobs())
         {
             var box = new StackPanel { Spacing = 3 };
@@ -1149,9 +1153,10 @@ internal sealed partial class MainWindow : Window, IPaneHost
             var errors = job.Errors;
             foreach (var err in errors.Take(5))
                 box.Children.Add(new TextBlock { Text = "⚠ " + err, FontFamily = Mono, FontSize = 10.5, Foreground = Theme.Brush("PolluxBadBrush"), TextWrapping = TextWrapping.Wrap });
-            var row = new TransferRow { Bar = bar, Status = status, Current = current, Pause = pause, State = job.State, Errors = errors.Count };
+            var row = new TransferRow { Bar = bar, Status = status, Current = current, Pause = pause };
             FillRow(row, job);
             _transferRows[job.Id] = row;
+            _shownRows[job.Id] = new Core.Operations.TransferBoard.RowSnapshot(job.State, errors.Count);
             TransfersPanel.Children.Add(box);
         }
 
@@ -1591,14 +1596,8 @@ internal sealed partial class MainWindow : Window, IPaneHost
     private List<PaletteItem> CommandItems()
     {
         var recent = _app.RecentCommands;
-        return CommandCatalog.All
-            .Where(c => c.ShowInPalette && CopilotAvailability.AllowsCommand(c.Id, _app.CopilotAvailable))
-            .OrderBy(c => { var i = recent.IndexOf(c.Id); return i < 0 ? int.MaxValue : i; })
-            .Select(c => new PaletteItem(c.Title, "", Services.Keys.KeyFor(c.Id)?.ToString() ?? "", () => { _app.NoteCommand(c.Id); Execute(c.Id); }))
-            .Concat(_app.CopilotAvailable
-                ? SelectionActions.For(Services.Settings.Copilot).Select(a => new PaletteItem("Copilot: " + a.Title, "", "", () => Execute(a.CommandId)))
-                : [])
-            .Concat(_app.ExtraCommands().Where(c => CopilotAvailability.AllowsCommand(c.Id, _app.CopilotAvailable)).Select(c => new PaletteItem(c.Title, "", Services.Keys.KeyFor(c.Id)?.ToString() ?? "", () => Execute(c.Id))))
+        return recent.Palette(CommandRegistry.Commands(Services.Settings.Copilot, _app.CopilotAvailable))
+            .Select(c => new PaletteItem(c.Title, "", Services.Keys.KeyFor(c.Id)?.ToString() ?? "", () => { recent.Note(c.Id); Execute(c.Id); }))
             .ToList();
     }
 

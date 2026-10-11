@@ -64,7 +64,7 @@ internal sealed class WindowPolluxActions(
     public async Task<FileOperationResult> RunAsync(FileOperation operation, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(operation);
-        if (await Task.Run(() => Check(operation), cancellationToken).ConfigureAwait(false) is { } problem)
+        if (await Task.Run(() => operation.Precheck(File.Exists, Directory.Exists), cancellationToken).ConfigureAwait(false) is { } problem)
         {
             return new(false, [], problem);
         }
@@ -84,35 +84,6 @@ internal sealed class WindowPolluxActions(
             FileOperationKind.AddBookmark => Bookmark(operation),
             _ => new FileOperationResult(false, [], $"{operation.Kind} is not supported."),
         }), cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>What stops the operation before it starts (missing entries, a name that is taken), checked off the UI thread.</summary>
-    private static string? Check(FileOperation operation)
-    {
-        static bool Exists(string p) => File.Exists(p) || Directory.Exists(p);
-
-        if (operation.Kind == FileOperationKind.NewFolder)
-        {
-            if (!Directory.Exists(operation.Paths[0])) return $"The folder {operation.Paths[0]} does not exist.";
-        }
-        else if (operation.Paths.FirstOrDefault(p => !Exists(p)) is { } missing)
-        {
-            return $"{missing} does not exist.";
-        }
-
-        if (operation.Kind is FileOperationKind.Copy or FileOperationKind.Move && File.Exists(operation.Destination))
-        {
-            return $"{operation.Destination} is a file, not a folder.";
-        }
-
-        if (operation.Kind is FileOperationKind.Rename or FileOperationKind.NewFolder
-            && Exists(operation.Targets[0])
-            && !(operation.Kind == FileOperationKind.Rename && string.Equals(operation.Targets[0], operation.Paths[0], StringComparison.OrdinalIgnoreCase)))
-        {
-            return $"{operation.Targets[0]} exists already.";
-        }
-
-        return null;
     }
 
     private FileOperationResult CopyOrMove(FileOperation operation)
@@ -143,17 +114,8 @@ internal sealed class WindowPolluxActions(
             [.. p.VisibleItems.Select(i => new PaneEntry(i.Entry.Name, i.Entry.IsDirectory))]);
     }
 
-    private PaneView? Resolve(string target)
-    {
-        var active = activePane();
-        return target switch
-        {
-            PaneTargets.Left => panes[0],
-            PaneTargets.Right => isDual() ? panes[1] : null,
-            PaneTargets.Other => isDual() ? panes[1 - active] : null,
-            _ => panes[active],
-        };
-    }
+    private PaneView? Resolve(string target) =>
+        PaneTargets.ResolveIndex(target, activePane(), isDual()) is { } index ? panes[index] : null;
 
     private Task<T> OnUi<T>(Func<Task<T>> work, CancellationToken cancellationToken)
     {

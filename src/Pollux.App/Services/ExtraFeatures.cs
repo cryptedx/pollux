@@ -4,7 +4,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Pollux.App.Views;
 using Pollux.Core.Clipboard;
-using Pollux.Core.Commands;
 using Pollux.Core.Files;
 using Pollux.Core.Inbox;
 
@@ -18,21 +17,23 @@ internal static class ExtraFeatures
     private static NotesWindow? _notes;
     private static UpdatesWindow? _updates;
 
-    public static IReadOnlyList<CommandDefinition> Commands { get; } =
-    [
-        new("downloads.show", "Downloads: Show Downloads Stack", "ctrl+shift+o"),
-        new("notes.show", "Notes: Open Notes"),
-        new("notes.new", "Notes: New Note", "ctrl+alt+m"),
-        new("clipboard.show", "Clipboard: Open Clipboard Stack"),
-        new("clipboard.clear", "Clipboard: Clear History"),
-        new("clipboard.pause", "Clipboard: Pause Capture"),
-        new("clipboard.resume", "Clipboard: Resume Capture"),
-        new("updates.show", "Updates: Show App Updates (winget)…"),
-        new("app.restartAsAdmin", "Pollux: Open Admin Instance Here (elevated)"),
-        new("inbox.open", "Inbox: Open Desktop as Inbox"),
-        new("inbox.sort", "Inbox: Sort Desktop Into Folders…"),
-        new("inbox.toggleDesktopIcons", "Inbox: Show/Hide Desktop Icons"),
-    ];
+    /// <summary>The commands run here rather than by a window, by id (titles and default keys are in Core's <c>CommandCatalog</c>).</summary>
+    private static readonly Dictionary<string, Action<App, MainWindow>> Handlers = new(StringComparer.Ordinal)
+    {
+        ["downloads.show"] = (app, _) => ShowDownloads(app),
+        ["notes.show"] = (app, _) => ShowNotes(app, newNote: false),
+        ["notes.new"] = (app, _) => ShowNotes(app, newNote: true),
+        // Through the App: while the Clipboard History is off it asks once whether to turn it on.
+        ["clipboard.show"] = (app, window) => app.ShowClipboardStack(window),
+        ["clipboard.clear"] = (app, window) => WithClipboardHistory(app, window, s => s.ClearHistory()),
+        ["clipboard.pause"] = (app, window) => WithClipboardHistory(app, window, s => s.SetPaused(true)),
+        ["clipboard.resume"] = (app, window) => WithClipboardHistory(app, window, s => s.SetPaused(false)),
+        ["updates.show"] = (app, _) => ShowUpdates(app),
+        ["app.restartAsAdmin"] = (_, window) => OpenAdminInstance(window),
+        ["inbox.open"] = (_, window) => window.Execute("nav.desktop"),
+        ["inbox.toggleDesktopIcons"] = ToggleDesktopIcons,
+        ["inbox.sort"] = (app, window) => _ = SortInboxAsync(app, window),
+    };
 
     public static void ApplySettings(App app)
     {
@@ -105,28 +106,29 @@ internal static class ExtraFeatures
         _updates.ShowWindow();
     }
 
+    /// <summary>Runs <paramref name="id"/> when it is one of the commands above; false for any other id.</summary>
     public static bool Execute(App app, string id, MainWindow window)
     {
-        switch (id)
-        {
-            case "downloads.show": ShowDownloads(app); return true;
-            case "notes.show": ShowNotes(app, newNote: false); return true;
-            case "notes.new": ShowNotes(app, newNote: true); return true;
-            case "clipboard.show" or "clipboard.clear" or "clipboard.pause" or "clipboard.resume": return ClipboardCommands.Execute(id, window);
-            case "updates.show": ShowUpdates(app); return true;
-            case "app.restartAsAdmin": OpenAdminInstance(window); return true;
-            case "inbox.open": window.Execute("nav.desktop"); return true;
-            case "inbox.toggleDesktopIcons":
-                var visible = DesktopIcons.AreVisible();
-                if (visible is null) { window.ShowToast("Desktop not found"); return true; }
-                DesktopIcons.SetVisible(!visible.Value);
-                app.Services.Settings.Inbox.HideDesktopIcons = visible.Value;
-                app.Services.SaveSettings();
-                window.ShowToast(visible.Value ? "Desktop icons hidden — Inbox: Ctrl+Shift+P › Inbox" : "Desktop icons visible");
-                return true;
-            case "inbox.sort": _ = SortInboxAsync(app, window); return true;
-            default: return false;
-        }
+        if (!Handlers.TryGetValue(id, out var run)) return false;
+        run(app, window);
+        return true;
+    }
+
+    /// <summary>Clipboard History commands work only while it is on; otherwise they toast "Clipboard History is off".</summary>
+    private static void WithClipboardHistory(App app, MainWindow window, Action<ClipboardService> action)
+    {
+        if (app.ClipboardCommandsOn) action(app.ClipboardService);
+        else window.ShowToast("Clipboard History is off");
+    }
+
+    private static void ToggleDesktopIcons(App app, MainWindow window)
+    {
+        var visible = DesktopIcons.AreVisible();
+        if (visible is null) { window.ShowToast("Desktop not found"); return; }
+        DesktopIcons.SetVisible(!visible.Value);
+        app.Services.Settings.Inbox.HideDesktopIcons = visible.Value;
+        app.Services.SaveSettings();
+        window.ShowToast(visible.Value ? "Desktop icons hidden — Inbox: Ctrl+Shift+P › Inbox" : "Desktop icons visible");
     }
 
     /// <summary>Starts an elevated Pollux next to the normal one (UAC / Delinea prompt). The normal instance keeps running.</summary>

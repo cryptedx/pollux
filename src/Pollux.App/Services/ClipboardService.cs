@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using Microsoft.UI.Dispatching;
 using Pollux.App.Interop;
 using Pollux.Core.Clipboard;
@@ -24,14 +23,11 @@ internal sealed class ClipboardService
     private readonly DispatcherQueue _dispatcher;
     private ClipboardListener? _listener;
     private ClipStore? _store;
-    private ClipboardHistory? _history;
+    private ClipHistoryKeeper? _keeper;
     private DispatcherQueueTimer? _captureDebounce;
     private DispatcherQueueTimer? _saveDebounce;
-    private Task<ClipboardHistory>? _loading;
-    private Task _writing = Task.CompletedTask;
     private bool _capturing;
     private bool _captureAgain;
-    private bool _dirty;
     private uint _lastSequence;
 
     public ClipboardService(AppServices services, DispatcherQueue dispatcher)
@@ -47,28 +43,23 @@ internal sealed class ClipboardService
 
     private ClipStore Store => _store ??= new ClipStore(ClipStore.DirectoryFor(_services.Paths), DpapiClipProtector.Instance);
 
-    /// <summary>The Clipboard History, loaded from disk on first use (waits for a load started by <see cref="Apply"/>).</summary>
-    public ClipboardHistory History
+    /// <summary>Owns loading, retention and saving of the history (data-safety rules live in Core).</summary>
+    private ClipHistoryKeeper Keeper
     {
         get
         {
-            if (_history is null)
+            if (_keeper is null)
             {
-                _history = _loading is { } loading ? loading.GetAwaiter().GetResult() : Store.Load();
-                _loading = null;
-                if (Store.LoadFailed)
-                {
-                    // Locked or access denied: nothing is saved until the stored history could be read (see SaveNow).
-                    CrashLog.Info("clipboard: history could not be read; saving paused until it can be");
-                }
-
-                _history.Retention = Settings.Retention;
-                _history.Prune(DateTime.Now);
+                _keeper = new ClipHistoryKeeper(Store, () => Settings.Retention, CrashLog.Info, CrashLog.Write);
+                _keeper.Merged += () => Changed?.Invoke();
             }
 
-            return _history;
+            return _keeper;
         }
     }
+
+    /// <summary>The Clipboard History, loaded from disk on first use (waits for a load started by <see cref="Apply"/>).</summary>
+    public ClipboardHistory History => Keeper.History;
 
     /// <summary>Starts or stops listening after a settings change. Called with elevated=true from the Admin Instance, which never captures.</summary>
     public void Apply(bool elevated)
@@ -77,11 +68,7 @@ internal sealed class ClipboardService
         if (on && _listener is null)
         {
             // Decrypting a large history takes a while: load in the background; the first use of History waits for it.
-            if (_history is null && _loading is null)
-            {
-                var store = Store;
-                _loading = Task.Run(store.Load);
-            }
+            Keeper.BeginLoad();
 
             _listener = new ClipboardListener(_dispatcher);
             _listener.ClipboardChanged += OnClipboardChanged;
@@ -93,10 +80,8 @@ internal sealed class ClipboardService
             _listener = null;
         }
 
-        if (_history is not null && _history.Retention != Settings.Retention)
+        if (_keeper is { } keeper && keeper.ApplyRetention())
         {
-            _history.Retention = Settings.Retention;
-            _history.Prune(DateTime.Now);
             ScheduleSave();
         }
     }
@@ -112,7 +97,7 @@ internal sealed class ClipboardService
     /// <summary>Clear History: removes every Clip except the Kept Clips.</summary>
     public void ClearHistory()
     {
-        History.ClearHistory();
+        Keeper.Clear();
         Changed?.Invoke();
         SaveSoon();
     }
@@ -126,17 +111,7 @@ internal sealed class ClipboardService
         _listener?.Dispose();
         _listener = null;
         _saveDebounce?.Stop();
-        _writing.Wait();
-        if (!_dirty || _history is null || !EnsureStoreReadable()) return;
-        try
-        {
-            Store.Save(_history);
-            _dirty = false;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException)
-        {
-            CrashLog.Write(ex);
-        }
+        _keeper?.Shutdown();
     }
 
     /// <summary>Call after changing the History from outside (Clipboard Stack): saves debounced.</summary>
@@ -341,64 +316,32 @@ internal sealed class ClipboardService
 
     private void ScheduleSave()
     {
-        _dirty = true;
+        Keeper.MarkChanged();
         if (_saveDebounce is null)
         {
             _saveDebounce = _dispatcher.CreateTimer();
             _saveDebounce.Interval = TimeSpan.FromSeconds(1);
             _saveDebounce.IsRepeating = false;
-            _saveDebounce.Tick += (_, _) => SaveNow();
+            _saveDebounce.Tick += (_, _) => _ = SaveNowAsync();
         }
 
         _saveDebounce.Start();
     }
 
     /// <summary>
-    /// Takes a snapshot on the UI thread and writes it on a background task (serializing, DPAPI and disk IO of a large
-    /// history must not block the windows). One write at a time; changes made meanwhile are written after it.
+    /// Flushes the history: the keeper takes its snapshot on the UI thread (this runs from the dispatcher timer) and
+    /// writes on a background task. A flush that had to wait for a running write is retried by the keeper itself.
     /// </summary>
-    private void SaveNow()
+    private async Task SaveNowAsync()
     {
         _saveDebounce?.Stop();
-        if (!_dirty || _history is null) return;
-        if (!_writing.IsCompleted)
+        try
         {
-            ScheduleSave();
-            return;
+            await Keeper.FlushAsync();
         }
-
-        if (!EnsureStoreReadable() || Store.Snapshot(_history) is not { } snapshot) return;
-        _dirty = false;
-        var store = Store;
-        _writing = Task.Run(() =>
+        catch (Exception ex)
         {
-            try
-            {
-                store.Write(snapshot);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException)
-            {
-                _dispatcher.TryEnqueue(() =>
-                {
-                    CrashLog.Write(ex);
-                    _dirty = true; // written with the next change
-                });
-            }
-        });
-    }
-
-    /// <summary>
-    /// After the stored history could not be read at startup, tries again before any save and brings its Clips back
-    /// into the current history. False (nothing may be saved) while it still cannot be read.
-    /// </summary>
-    private bool EnsureStoreReadable()
-    {
-        if (!Store.LoadFailed || _history is null) return true;
-        var stored = Store.Load();
-        if (Store.LoadFailed) return false;
-        _history.MergeStored(stored, DateTime.Now);
-        CrashLog.Info("clipboard: stored history readable again, merged");
-        Changed?.Invoke();
-        return true;
+            CrashLog.Write(ex);
+        }
     }
 }

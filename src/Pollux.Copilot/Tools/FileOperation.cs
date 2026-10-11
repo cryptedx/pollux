@@ -101,6 +101,41 @@ public sealed record FileOperation(FileOperationKind Kind, IReadOnlyList<string>
         _ => $"bookmark {Paths[0]}" + (string.IsNullOrEmpty(Name) ? "" : $" as {Name}") + (string.IsNullOrEmpty(Group) ? "" : $" in {Group}"),
     };
 
+    /// <summary>
+    /// What stops the operation before it starts (a missing entry or folder, a destination that is a file, a name that is
+    /// taken), judged with the given existence checks; null when nothing does. A rename to the same path in another case
+    /// is not "taken".
+    /// </summary>
+    public string? Precheck(Func<string, bool> fileExists, Func<string, bool> directoryExists)
+    {
+        ArgumentNullException.ThrowIfNull(fileExists);
+        ArgumentNullException.ThrowIfNull(directoryExists);
+        bool Exists(string p) => fileExists(p) || directoryExists(p);
+
+        if (Kind == FileOperationKind.NewFolder)
+        {
+            if (!directoryExists(Paths[0])) return $"The folder {Paths[0]} does not exist.";
+        }
+        else if (Paths.FirstOrDefault(p => !Exists(p)) is { } missing)
+        {
+            return $"{missing} does not exist.";
+        }
+
+        if (Kind is FileOperationKind.Copy or FileOperationKind.Move && Destination is { } destination && fileExists(destination))
+        {
+            return $"{destination} is a file, not a folder.";
+        }
+
+        if (Kind is FileOperationKind.Rename or FileOperationKind.NewFolder
+            && Exists(Targets[0])
+            && !(Kind == FileOperationKind.Rename && string.Equals(Targets[0], Paths[0], StringComparison.OrdinalIgnoreCase)))
+        {
+            return $"{Targets[0]} exists already.";
+        }
+
+        return null;
+    }
+
     private static string Count(int n) => n == 1 ? "1 entry" : $"{n} entries";
 
     /// <summary>Validates a tool call; <paramref name="error"/> says what is wrong (for Copilot) when it returns null.</summary>

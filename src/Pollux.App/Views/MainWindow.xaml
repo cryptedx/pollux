@@ -14,17 +14,29 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Title bar -->
-        <Grid x:Name="TitleBar" Padding="12,0,150,0" Background="Transparent">
+        <!-- Title bar: the drag region stops before the Settings button so it stays clickable -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+        <Grid x:Name="TitleBar" Padding="12,0,8,0" Background="Transparent">
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                 <TextBlock FontFamily="{StaticResource PolluxMono}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center">
                     <Run Text="pollux" /><Run x:Name="LogoCursor" Text="_" Foreground="{ThemeResource PolluxAccentBrush}" />
                 </TextBlock>
+                <TextBlock x:Name="VersionText" FontFamily="{StaticResource PolluxMono}" FontSize="11" Padding="2,4" Margin="-6,0,0,0" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center"
+                           Tapped="VersionText_Tapped" SizeChanged="VersionText_SizeChanged" />
                 <Border x:Name="AdminBadge" Visibility="Collapsed" Background="{ThemeResource PolluxBadBrush}" CornerRadius="3" Padding="6,1">
                     <TextBlock Text="ADMIN" FontFamily="{StaticResource PolluxMono}" FontSize="10" FontWeight="Bold" Foreground="White" />
                 </Border>
                 <TextBlock x:Name="TitlePath" FontFamily="{StaticResource PolluxMono}" FontSize="12" Foreground="{ThemeResource PolluxMutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
             </StackPanel>
+        </Grid>
+        <Button x:Name="SettingsButton" Grid.Column="1" Style="{StaticResource PolluxFlatButton}" Padding="10,5" Margin="0,0,146,0" VerticalAlignment="Center"
+                Foreground="{ThemeResource PolluxMutedBrush}" IsTabStop="False" Click="SettingsButton_Click" AutomationProperties.Name="Settings">
+            <FontIcon Glyph="&#xE713;" FontSize="14" />
+        </Button>
         </Grid>
 
         <!-- Body -->

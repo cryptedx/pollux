@@ -1,8 +1,9 @@
-using Pollux.Core.Commands;
+namespace Pollux.Core.Commands;
 
-namespace Pollux.App.Services;
-
-/// <summary>Every command Pollux knows, with its default key (VS Code-like, German layout as reference).</summary>
+/// <summary>
+/// Every fixed command Pollux knows, with its default key (VS Code-like, German layout as reference).
+/// Consumers read it through <see cref="CommandRegistry"/>, which adds the Copilot gate and the selection actions.
+/// </summary>
 internal static class CommandCatalog
 {
     public static readonly CommandDefinition[] All =
@@ -104,5 +105,19 @@ internal static class CommandCatalog
         new("keybindings.openJson", "Preferences: Open keybindings.json"),
         new("app.openConfigFolder", "Preferences: Open Config Folder"),
         new("app.quit", "Pollux: Quit (stop background process)"),
+
+        // Beyond the file manager: Downloads Stack, Notes, Clipboard History, updates, Admin Instance, Inbox.
+        new("downloads.show", "Downloads: Show Downloads Stack", "ctrl+shift+o"),
+        new("notes.show", "Notes: Open Notes"),
+        new("notes.new", "Notes: New Note", "ctrl+alt+m"),
+        new("clipboard.show", "Clipboard: Open Clipboard Stack"),
+        new("clipboard.clear", "Clipboard: Clear History"),
+        new("clipboard.pause", "Clipboard: Pause Capture"),
+        new("clipboard.resume", "Clipboard: Resume Capture"),
+        new("updates.show", "Updates: Show App Updates (winget)…"),
+        new("app.restartAsAdmin", "Pollux: Open Admin Instance Here (elevated)"),
+        new("inbox.open", "Inbox: Open Desktop as Inbox"),
+        new("inbox.sort", "Inbox: Sort Desktop Into Folders…"),
+        new("inbox.toggleDesktopIcons", "Inbox: Show/Hide Desktop Icons"),
     ];
 }

@@ -21,25 +21,22 @@ namespace Pollux.App.Views;
 /// <summary>One Pane: its Tabs, path bar, Filter and file list (or Home).</summary>
 public sealed partial class PaneView : UserControl
 {
-    private readonly List<TabModel> _tabs = [];
-    private readonly Stack<string> _closedTabs = new();
+    private readonly PaneTabs _tabs;
     private static (PaneView Source, int Tab)? _draggedTab;
     private IPaneHost _host = null!;
-    private int _active;
     private CancellationTokenSource? _loadCts;
     private List<FileEntry> _entries = [];
     private List<FileItem> _visible = [];
     private FileSystemWatcher? _watcher;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _reloadTimer;
-    private string _typeAhead = "";
-    private DateTime _typeAheadAt;
+    private readonly TypeAheadMatcher _typeAhead = new();
     private bool _isActive;
     private string? _error;
-    private Core.Git.GitStatus? _git;
-    private string? _gitRoot;
+    private FolderGit? _git;
 
     public PaneView()
     {
+        _tabs = new PaneTabs(NewTabLocation);
         InitializeComponent();
         // Mouse back/forward buttons, like Explorer. handledEventsToo: the ListView swallows presses on items.
         AddHandler(PointerPressedEvent, new PointerEventHandler(OnXButtonPressed), handledEventsToo: true);
@@ -81,9 +78,12 @@ public sealed partial class PaneView : UserControl
     }
 
     internal int Index { get; set; }
-    internal TabModel Tab => _tabs[_active];
-    internal IReadOnlyList<TabModel> Tabs => _tabs;
-    internal int ActiveTabIndex => _active;
+    internal TabModel Tab => _tabs.Active;
+    internal IReadOnlyList<TabModel> Tabs => _tabs.Tabs;
+    internal int ActiveTabIndex => _tabs.ActiveIndex;
+
+    /// <summary>This Pane's Tabs; change them through EditTabs so the Pane shows the result.</summary>
+    internal PaneTabs PaneTabs => _tabs;
 
     /// <summary>The folder shown, or null on Home.</summary>
     internal string? Folder => Tab.IsHome ? null : Tab.Location;
@@ -103,24 +103,13 @@ public sealed partial class PaneView : UserControl
     internal void Initialize(IPaneHost host, PaneSession session)
     {
         _host = host;
-        foreach (var t in session.Tabs) _tabs.Add(new TabModel(t.Location));
-        if (_tabs.Count == 0) _tabs.Add(new TabModel(NewTabLocation()));
-        _active = Math.Clamp(session.ActiveTab, 0, _tabs.Count - 1);
+        _tabs.Load(session);
         RenderTabs();
         _ = ShowCurrentAsync();
     }
 
     /// <summary>Replaces all Tabs (used when switching Workspaces).</summary>
-    internal void LoadSession(PaneSession session)
-    {
-        RememberSelection();
-        _tabs.Clear();
-        foreach (var t in session.Tabs) _tabs.Add(new TabModel(t.Location));
-        if (_tabs.Count == 0) _tabs.Add(new TabModel(NewTabLocation()));
-        _active = Math.Clamp(session.ActiveTab, 0, _tabs.Count - 1);
-        RenderTabs();
-        _ = ShowCurrentAsync();
-    }
+    internal void LoadSession(PaneSession session) => EditTabs(t => t.Load(session));
 
     /// <summary>Stops background work when the window closes for good.</summary>
     internal void Shutdown()
@@ -130,11 +119,7 @@ public sealed partial class PaneView : UserControl
         StopWatching();
     }
 
-    internal PaneSession ToSession() => new()
-    {
-        Tabs = _tabs.Select(t => new TabSession { Location = t.Location }).ToList(),
-        ActiveTab = _active,
-    };
+    internal PaneSession ToSession() => _tabs.ToSession();
 
     internal bool IsActive
     {
@@ -161,77 +146,54 @@ public sealed partial class PaneView : UserControl
 
         if (List.SelectedIndex < 0 && _visible.Count > 0) List.SelectedIndex = 0;
         var container = List.SelectedIndex >= 0 ? List.ContainerFromIndex(List.SelectedIndex) as ListViewItem : null;
-        if (container is not null) container.Focus(FocusState.Keyboard);
-        else List.Focus(FocusState.Keyboard);
+        // Programmatic, not Keyboard: the focus frame then only shows when the last input came from the keyboard,
+        // so clicking into a Pane does not flash it around the selected row.
+        if (container is not null) container.Focus(FocusState.Programmatic);
+        else List.Focus(FocusState.Programmatic);
     }
 
     // ---------------- tabs ----------------
 
+    /// <summary>
+    /// Changes the Tabs of one or more Panes and shows the outcome: the shown Tabs remember their selection first,
+    /// then every Pane redraws its tab strip and lists its active Tab again if that changed (or <paramref name="reload"/>).
+    /// </summary>
+    internal static void EditTabs(IReadOnlyList<PaneView> panes, Action change, bool reload = false)
+    {
+        var shown = new TabModel[panes.Count];
+        for (var i = 0; i < panes.Count; i++)
+        {
+            panes[i].RememberSelection();
+            shown[i] = panes[i].Tab;
+        }
+
+        change();
+        for (var i = 0; i < panes.Count; i++)
+        {
+            panes[i].RenderTabs();
+            if (reload || panes[i].Tab != shown[i]) _ = panes[i].ShowCurrentAsync();
+        }
+    }
+
+    internal void EditTabs(Action<PaneTabs> change, bool reload = false) => EditTabs([this], () => change(_tabs), reload);
+
     /// <summary>Removes a Tab and returns its location (for moving it elsewhere).</summary>
     internal string DetachTab(int index)
     {
-        var location = _tabs[index].Location;
-        if (_tabs.Count == 1)
-        {
-            _tabs[0] = new TabModel(NewTabLocation());
-            SwitchTo(0, force: true);
-            return location;
-        }
-
-        _tabs.RemoveAt(index);
-        if (_active >= _tabs.Count || index < _active) _active = Math.Max(0, _active - 1);
-        SwitchTo(_active, force: true);
+        var location = "";
+        EditTabs(t => location = t.Detach(index), reload: true);
         return location;
     }
 
-    internal void InsertTab(int index, string location)
-    {
-        RememberSelection();
-        _tabs.Insert(Math.Clamp(index, 0, _tabs.Count), new TabModel(location));
-        _active = Math.Clamp(index, 0, _tabs.Count - 1);
-        RenderTabs();
-        _ = ShowCurrentAsync();
-    }
+    internal void NewTab(string? location = null, bool activate = true) => EditTabs(t => t.New(location, activate));
 
-    internal void ReorderTab(int from, int to)
-    {
-        if (from == to || from < 0 || from >= _tabs.Count) return;
-        var activeTab = _tabs[_active]; // the shown tab stays active, wherever it ends up
-        var t = _tabs[from];
-        _tabs.RemoveAt(from);
-        _tabs.Insert(Math.Clamp(to, 0, _tabs.Count), t);
-        _active = _tabs.IndexOf(activeTab);
-        RenderTabs();
-    }
+    internal void CloseTab(int index) => EditTabs(t => t.Close(index), reload: index >= 0 && index < _tabs.Tabs.Count);
 
-    internal void NewTab(string? location = null, bool activate = true)
-    {
-        _tabs.Insert(_active + 1, new TabModel(location ?? NewTabLocation()));
-        if (activate) SwitchTo(_active + 1);
-        else RenderTabs();
-    }
+    internal void ReopenClosedTab() => EditTabs(t => t.ReopenClosed());
 
-    internal void CloseTab(int index)
-    {
-        if (index < 0 || index >= _tabs.Count) return;
-        _closedTabs.Push(DetachTab(index));
-    }
+    internal void NextTab(int delta) => EditTabs(t => t.Next(delta));
 
-    internal void ReopenClosedTab()
-    {
-        if (_closedTabs.Count > 0) NewTab(_closedTabs.Pop());
-    }
-
-    internal void NextTab(int delta) => SwitchTo(((_active + delta) % _tabs.Count + _tabs.Count) % _tabs.Count);
-
-    internal void SwitchTo(int index, bool force = false)
-    {
-        if (index == _active && !force) return;
-        RememberSelection();
-        _active = Math.Clamp(index, 0, _tabs.Count - 1);
-        RenderTabs();
-        _ = ShowCurrentAsync();
-    }
+    internal void SwitchTo(int index) => EditTabs(t => t.SwitchTo(index));
 
     private string NewTabLocation()
     {
@@ -242,12 +204,12 @@ public sealed partial class PaneView : UserControl
     private void RenderTabs()
     {
         TabStrip.Children.Clear();
-        for (var i = 0; i < _tabs.Count; i++)
+        for (var i = 0; i < Tabs.Count; i++)
         {
             var index = i;
-            var on = i == _active;
-            var title = new TextBlock { Text = _tabs[i].Title, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 150 };
-            var icon = _tabs[i].IsHome
+            var on = i == ActiveTabIndex;
+            var title = new TextBlock { Text = Tabs[i].Title, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 150 };
+            var icon = Tabs[i].IsHome
                 ? (FrameworkElement)new TextBlock { Text = "⌂", FontSize = 12, VerticalAlignment = VerticalAlignment.Center }
                 : new Border { Width = 14, Height = 10, CornerRadius = new CornerRadius(2, 3, 2, 2), Background = Res("PolluxFolderBrush"), VerticalAlignment = VerticalAlignment.Center };
             var close = new Button
@@ -276,13 +238,13 @@ public sealed partial class PaneView : UserControl
                 BorderThickness = new Thickness(0, 0, 0, 2),
                 Opacity = on ? 1 : 0.7,
             };
-            ToolTipService.SetToolTip(tab, _tabs[i].IsHome ? "Home" : _tabs[i].Location);
+            ToolTipService.SetToolTip(tab, Tabs[i].IsHome ? "Home" : Tabs[i].Location);
             tab.CanDrag = true;
             tab.AllowDrop = true;
             tab.DragStarting += (_, e) =>
             {
                 _draggedTab = (this, index);
-                e.Data.SetText(_tabs[index].Location);
+                e.Data.SetText(Tabs[index].Location);
                 e.Data.RequestedOperation = DataPackageOperation.Move;
             };
             tab.DragOver += (_, e) =>
@@ -333,14 +295,13 @@ public sealed partial class PaneView : UserControl
         _draggedTab = null;
         if (from.Source._host == _host)
         {
-            var end = from.Source == this ? _tabs.Count - 1 : _tabs.Count;
+            var end = from.Source == this ? Tabs.Count - 1 : Tabs.Count;
             _host.MoveTab(from.Source.Index, from.Tab, Index, targetIndex < 0 ? end : targetIndex);
             return;
         }
 
         if (from.Tab < 0 || from.Tab >= from.Source.Tabs.Count) return;
-        var location = from.Source.DetachTab(from.Tab);
-        InsertTab(targetIndex < 0 ? _tabs.Count : targetIndex, location);
+        EditTabs([from.Source, this], () => Core.Session.PaneTabs.Move(from.Source._tabs, from.Tab, _tabs, targetIndex < 0 ? Tabs.Count : targetIndex), reload: true);
         _host.OnPaneActivated(this);
         _host.Activate();
     }
@@ -398,7 +359,7 @@ public sealed partial class PaneView : UserControl
 
     private void RememberSelection()
     {
-        if (_tabs.Count == 0 || Tab.IsHome) return;
+        if (Tab.IsHome) return;
         Tab.SelectedNames = SelectedItems.Select(i => i.Entry.Name).ToList();
     }
 
@@ -500,55 +461,25 @@ public sealed partial class PaneView : UserControl
         _ = LoadGitStatusAsync(tab, cts.Token);
     }
 
-    /// <summary>Applies hidden/system visibility, sort and Filter, then shows the rows and restores selection.</summary>
+    /// <summary>Shows the rows <see cref="FolderProjection"/> picks for the Tab and restores its selection.</summary>
     private void Present(TabModel tab)
     {
         var s = Settings.Files;
-        var comparer = new EntryComparer(s.SortBy, s.SortDescending, s.FoldersFirst);
-        var query = tab.Filter ?? "";
-        var items = new List<FileItem>(_entries.Count);
-        foreach (var e in _entries.Order(comparer))
-        {
-            if (e.Name.EndsWith(".pollux-part", StringComparison.OrdinalIgnoreCase)) continue; // in-flight transfer
-            if (!s.ShowHidden && e.IsHidden) continue;
-            if (!s.ShowSystem && e.IsSystem && e.IsHidden) continue;
-            var m = FilterMatcher.Match(e.Name, query, Settings.Filter.MatchInitials);
-            if (!m.IsMatch) continue;
-            var git = _git is not null && _gitRoot is not null && WinPath.IsSameOrUnder(tab.Location, _gitRoot) ? _git.MarkFor(RepoRelative(tab.Location), e.Name, e.IsDirectory) : Core.Git.GitMark.None;
-            items.Add(new FileItem(e, s.DateFormat, s.ShowExtensions) { Highlights = m.Ranges, Git = git });
-        }
+        var listing = FolderProjection.Project(_entries, tab.Location, Settings, tab.Filter, _git, tab.SelectedNames, tab.FocusName);
+        tab.FocusName = null;
+        var items = listing.Rows.Select(r => new FileItem(r.Entry, s.DateFormat, s.ShowExtensions) { Highlights = r.Highlights, Git = r.Git }).ToList();
 
         _visible = items;
         List.ItemsSource = items;
         UpdateSortHeader();
 
         EmptyText.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        EmptyText.Text = _error ?? (query.Length > 0 ? "no matches" : "empty folder");
+        EmptyText.Text = _error ?? (string.IsNullOrEmpty(tab.Filter) ? "empty folder" : "no matches");
         FilterCount.Text = $"{items.Count}/{_entries.Count}";
         InfoText.Text = GitInfo.BranchFor(tab.Location) is { } branch ? "⎇ " + branch : "";
 
-        // Restore selection / focus target.
-        var names = tab.FocusName is { } f ? [f] : tab.SelectedNames;
-        tab.FocusName = null;
-        if (names.Count > 0)
-        {
-            var set = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
-            FileItem? firstSel = null;
-            foreach (var it in items)
-            {
-                if (set.Contains(it.Entry.Name))
-                {
-                    List.SelectedItems.Add(it);
-                    firstSel ??= it;
-                }
-            }
-
-            if (firstSel is not null) List.ScrollIntoView(firstSel);
-        }
-        else if (items.Count > 0)
-        {
-            List.SelectedIndex = 0;
-        }
+        foreach (var i in listing.Selected) List.SelectedItems.Add(items[i]);
+        if (listing.Selected.Count > 0) List.ScrollIntoView(items[listing.Selected[0]]);
 
         _host.OnPaneStateChanged(this);
         if (_isActive && FocusManager.GetFocusedElement(XamlRoot) is not TextBox) FocusListSoon();
@@ -561,20 +492,16 @@ public sealed partial class PaneView : UserControl
         var root = Settings.Files.GitStatus ? GitInfo.RootFor(tab.Location) : null;
         if (root is null)
         {
-            if (_git is not null) { _git = null; _gitRoot = null; RememberSelection(); Present(tab); }
+            if (_git is not null) { _git = null; RememberSelection(); Present(tab); }
             return;
         }
 
         var status = await GitInfo.StatusAsync(root, ct);
         if (ct.IsCancellationRequested || status is null || tab != Tab) return;
-        _git = status;
-        _gitRoot = root;
+        _git = new FolderGit(status, root);
         RememberSelection();
         Present(tab);
     }
-
-    private string RepoRelative(string folder) =>
-        _gitRoot is null || folder.Length <= _gitRoot.Length ? "" : folder[(_gitRoot.TrimEnd('\\').Length + 1)..].Replace('\\', '/');
 
     internal void SelectByName(string name)
     {
@@ -858,22 +785,12 @@ public sealed partial class PaneView : UserControl
     /// <summary>Explorer-style type-ahead: typing selects the next entry starting with the typed text.</summary>
     internal void TypeAhead(char c)
     {
-        var now = DateTime.UtcNow;
-        _typeAhead = (now - _typeAheadAt).TotalMilliseconds < 900 ? _typeAhead + c : c.ToString();
-        _typeAheadAt = now;
-        var start = _typeAhead.Length == 1 ? List.SelectedIndex + 1 : Math.Max(0, List.SelectedIndex);
-        for (var k = 0; k < _visible.Count; k++)
-        {
-            var i = (start + k) % _visible.Count;
-            if (_visible[i].Entry.Name.StartsWith(_typeAhead, StringComparison.OrdinalIgnoreCase))
-            {
-                List.SelectedItems.Clear();
-                List.SelectedIndex = i;
-                List.ScrollIntoView(_visible[i]);
-                FocusList();
-                return;
-            }
-        }
+        var i = _typeAhead.Next(c, DateTime.UtcNow, List.SelectedIndex, _visible.Select(v => v.Entry.Name).ToList());
+        if (i < 0) return;
+        List.SelectedItems.Clear();
+        List.SelectedIndex = i;
+        List.ScrollIntoView(_visible[i]);
+        FocusList();
     }
 
     private void List_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
