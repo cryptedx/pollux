@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.3 — 2026-10-11
+
+### Fixed
+
+- The x64 and ARM64 downloads are built again: the ARM64 release build picked the build machine's architecture and failed, so 1.5.0 to 1.5.2 were published without downloads. No other changes.
+
 ## 1.5.2 — 2026-10-11
 
 ### Fixed

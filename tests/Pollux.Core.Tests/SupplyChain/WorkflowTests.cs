@@ -78,6 +78,20 @@ public sealed partial class WorkflowTests
     }
 
     [TestMethod]
+    [DataRow("x64", "win-x64")]
+    [DataRow("ARM64", "win-arm64")]
+    public void PublishWithOnlyAPlatformTargetsThatPlatform(string platform, string rid)
+    {
+        // The workflows publish with -p:Platform and no -r; without a RID from Platform the SDK took the runner's
+        // (win-x64) and the ARM64 release build failed with NETSDK1032.
+        var project = Path.Combine(RepoFiles.Root, "src", "Pollux.App", "Pollux.App.csproj");
+        var (code, output) = RepoFiles.Dotnet(RepoFiles.Root, null, "msbuild", project, "-getProperty:RuntimeIdentifier",
+            "-p:Configuration=Release", "-p:Platform=" + platform);
+        Assert.AreEqual(0, code, output);
+        Assert.AreEqual(rid, output.Trim());
+    }
+
+    [TestMethod]
     public void TheForgejoPublishWorkflowPinsItsActionsToo()
     {
         // publish-github.yml holds GH_PUBLISH_TOKEN, the most privileged token on the release path.

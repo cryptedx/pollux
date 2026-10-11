@@ -8,12 +8,16 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64;ARM64</Platforms>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <!-- The RID follows Platform; without it the SDK takes the build machine's RID (win-x64 on GitHub's runners), which
+         breaks an ARM64 publish (NETSDK1032). Set here instead of -r so referenced projects keep their locked restore. -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(Platform)' == 'x64'">win-x64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(Platform)' == 'ARM64'">win-arm64</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
     <WinUISDKReferences>false</WinUISDKReferences>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationIcon>Assets\pollux.ico</ApplicationIcon>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>1.5.2</Version>
+    <Version>1.5.3</Version>
     <Product>Pollux</Product>
 
     <!-- Unpackaged, self-contained, per-user install without admin (ADR 0002). -->
