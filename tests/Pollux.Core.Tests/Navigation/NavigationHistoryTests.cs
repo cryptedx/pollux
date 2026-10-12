@@ -32,6 +32,21 @@ public sealed class NavigationHistoryTests
     }
 
     [TestMethod]
+    public void ReplaceCurrentKeepsBackAndForward()
+    {
+        var h = new NavigationHistory(@"C:\a");
+        h.Navigate(@"C:\b\pack.zip");
+        h.Navigate(@"C:\c");
+        h.Back();
+        h.ReplaceCurrent(@"C:\b");
+
+        Assert.AreEqual(@"C:\b", h.Current);
+        Assert.AreEqual(@"C:\c", h.Forward());
+        Assert.AreEqual(@"C:\b", h.Back());
+        Assert.AreEqual(@"C:\a", h.Back());
+    }
+
+    [TestMethod]
     public void NavigatingToCurrentIsIgnored()
     {
         var h = new NavigationHistory(@"C:\a");

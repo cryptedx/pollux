@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.6 — 2026-10-12
+
+### Fixed
+
+- A tab whose location is a file (for example a `.zip` restored from the last session) now opens the file's folder with the file selected, instead of showing the system error "The parameter is incorrect".
+
 ## 1.5.5 — 2026-10-12
 
 ### Fixed

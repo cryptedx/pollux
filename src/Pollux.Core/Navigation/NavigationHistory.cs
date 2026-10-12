@@ -27,6 +27,9 @@ public sealed class NavigationHistory(string start, int capacity = 100)
         _index = _entries.Count - 1;
     }
 
+    /// <summary>Swaps the current entry for another location without adding a history step.</summary>
+    public void ReplaceCurrent(string location) => _entries[_index] = location;
+
     public string? Back() => CanGoBack ? _entries[--_index] : null;
 
     public string? Forward() => CanGoForward ? _entries[++_index] : null;

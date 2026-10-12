@@ -462,6 +462,7 @@ public sealed partial class PaneView : UserControl
 
         var all = new List<FileEntry>();
         var first = true;
+        string? fileFolder = null;
         try
         {
             await foreach (var batch in DirectoryReader.ReadAsync(tab.Location, 300, cts.Token))
@@ -483,7 +484,10 @@ public sealed partial class PaneView : UserControl
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
         {
-            _error = ex is DirectoryNotFoundException ? "Folder not found." : ex.Message;
+            // A Tab restored from a Session (or written by a build that browses .zip files) can point at a file:
+            // show its folder with the file selected instead of the OS error ("The parameter is incorrect").
+            if (ex is IOException && File.Exists(tab.Location)) fileFolder = WinPath.Parent(tab.Location);
+            if (fileFolder is null) _error = ex is DirectoryNotFoundException ? "Folder not found." : ex.Message;
         }
         finally
         {
@@ -491,6 +495,16 @@ public sealed partial class PaneView : UserControl
         }
 
         if (cts.IsCancellationRequested) return;
+        if (fileFolder is not null)
+        {
+            // SelectedNames, not FocusName: FocusName is used up by the first batch and lost on the final Present.
+            tab.SelectedNames = [WinPath.Name(tab.Location)];
+            tab.History.ReplaceCurrent(fileFolder);
+            RenderTabs();
+            await ShowCurrentCoreAsync(keepSelection: false);
+            return;
+        }
+
         LoadingBar.Visibility = Visibility.Collapsed;
         _entries = all;
         Present(tab);
