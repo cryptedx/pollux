@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.5 — 2026-10-12
+
+### Fixed
+
+- Releases reach GitHub on the daily schedule again; the scheduled run had failed to find the public repository. No changes to the app itself.
+
 ## 1.5.4 — 2026-10-11
 
 ### Added

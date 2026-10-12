@@ -5,3 +5,6 @@ artifacts/
 *.user
 TestResults/
 .DS_Store
+
+# Screenshots dropped in the repo root; committed images live under docs/images/
+/*.png
