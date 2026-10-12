@@ -48,7 +48,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
     private TerminalController? _terminal;
     private string? _lastTerminalFolder;
 
-    private enum PaletteMode { Commands, Go, Workspaces }
+    private enum PaletteMode { Commands, Go, Workspaces, Templates }
 
     public MainWindow(App app, WindowSession session)
     {
@@ -83,6 +83,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         _activePane = Math.Clamp(session.ActivePane, 0, 1);
         ApplySettings();
         Services.SettingsChanged += OnSettingsChanged;
+        Services.FolderViewsChanged += OnFolderViewsChanged;
         Services.PlacesChanged += RenderSidebar;
         Drives.Changed += OnDrivesChanged;
 
@@ -177,6 +178,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
         }
 
         Services.SettingsChanged -= OnSettingsChanged;
+        Services.FolderViewsChanged -= OnFolderViewsChanged;
         Services.PlacesChanged -= RenderSidebar;
         Drives.Changed -= OnDrivesChanged;
         UpdatesWindow.ResultChanged -= OnUpdatesChanged;
@@ -281,6 +283,11 @@ internal sealed partial class MainWindow : Window, IPaneHost
         if (Services.SettingsError is { } err) ShowToast("Settings error: " + err, 6);
     }
 
+    private void OnFolderViewsChanged()
+    {
+        foreach (var p in _panes) p.ApplyFolderView();
+    }
+
     private void ApplySettings()
     {
         var s = Services.Settings;
@@ -355,7 +362,15 @@ internal sealed partial class MainWindow : Window, IPaneHost
     public void OnPaneStateChanged(PaneView pane)
     {
         if (pane != Active) return;
-        TitlePath.Text = (_workspace is { } ws ? $"⧉ {ws.Name} · " : "") + (pane.Folder is { } f ? ShortPath(f) : pane.Tab.IsRecycleBin ? "recycle bin" : "home");
+        // Locations that are not recorded in Recent (This PC, zips, servers) do not re-render the sidebar on their own.
+        if (!string.Equals(_sidebarLocation, pane.Tab.Location, StringComparison.OrdinalIgnoreCase)) RenderSidebar();
+        TitlePath.Text = (_workspace is { } ws ? $"⧉ {ws.Name} · " : "") + pane.Tab.Kind switch
+        {
+            LocationKind.Folder or LocationKind.Zip or LocationKind.Server => ShortPath(pane.Tab.Location),
+            LocationKind.RecycleBin => "recycle bin",
+            LocationKind.Home => "home",
+            _ => pane.Tab.Title,
+        };
         var sel = pane.SelectedItems;
         var text = $"{pane.VisibleItems.Count} items";
         if (sel.Count > 1) text = $"{sel.Count} selected · {Format.Size(sel.Where(i => !i.IsDirectory).Sum(i => i.Entry.Size))}";
@@ -375,14 +390,18 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
     // ---------------- sidebar ----------------
 
+    /// <summary>The location the sidebar last highlighted.</summary>
+    private string? _sidebarLocation;
+
     private void RenderSidebar()
     {
         if (SidebarHost.Visibility != Visibility.Visible) return;
         var s = Services;
-        var current = Active.Tab.Location;
+        var current = _sidebarLocation = Active.Tab.Location;
         SidebarPanel.Children.Clear();
         SidebarPanel.Children.Add(NavRow("Home", WinPath.Home, current, "⌂", ""));
         SidebarPanel.Children.Add(RecycleBinRow(current));
+        AddLocationRows(current);
 
         SidebarPanel.Children.Add(Heading("Bookmarks"));
         var n = 0;
@@ -660,6 +679,13 @@ internal sealed partial class MainWindow : Window, IPaneHost
             if (File.Exists(target)) Shell.Open(target);
             else Active.Navigate(target);
         };
+        // Middle-click opens a folder in a background Tab of the active Pane, like a browser.
+        b.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>
+        {
+            if (!e.GetCurrentPoint(b).Properties.IsMiddleButtonPressed || File.Exists(target)) return;
+            Active.NewTab(target, activate: false);
+            e.Handled = true;
+        }), handledEventsToo: true);
         return b;
     }
 
@@ -768,6 +794,12 @@ internal sealed partial class MainWindow : Window, IPaneHost
         }
 
         id = routed;
+        if ((LocationCommands.Refusal(id, p.Tab.Kind) ?? LocationCommands.VolumeRefusal(id, p.SelectedPaths)) is { } refusal)
+        {
+            ShowToast(refusal);
+            return;
+        }
+
         var command = CommandRegistry.Parse(id);
         switch (command.Kind)
         {
@@ -808,11 +840,16 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "view.sortCreated": p.SetSort(SortColumn.Created); break;
             case "view.sortExtension": p.SetSort(SortColumn.Extension); break;
             case "view.sortAttributes": p.SetSort(SortColumn.Attributes); break;
-            case "view.groupBy":
-                Services.Settings.Files.GroupBy = Core.Files.EntryGrouping.Next(Services.Settings.Files.GroupBy);
-                Services.SaveSettings();
-                ShowToast("Group by: " + Core.Files.EntryGrouping.Describe(Services.Settings.Files.GroupBy));
-                break;
+            case "view.sortDimensions": p.SetSort(SortColumn.Dimensions); break;
+            case "view.sortDuration": p.SetSort(SortColumn.Duration); break;
+            case "view.sortAuthors": p.SetSort(SortColumn.Authors); break;
+            case "view.sortTitle": p.SetSort(SortColumn.Title); break;
+            case "view.sortFileVersion": p.SetSort(SortColumn.FileVersion); break;
+            case "view.sortCompany": p.SetSort(SortColumn.Company); break;
+            case "view.sortDateTaken": p.SetSort(SortColumn.DateTaken); break;
+            case "view.groupBy": ShowToast("Group by: " + Core.Files.EntryGrouping.Describe(p.CycleGrouping())); break;
+            case "view.resetFolder": p.ResetFolderView(); break;
+            case "view.applyToSubfolders": p.ApplyViewToSubfolders(); break;
             case "pane.focus1": SetActivePane(0); break;
             case "pane.focus2": if (_dual) SetActivePane(1); break;
             case "pane.switch": if (_dual) SetActivePane(1 - _activePane); break;
@@ -843,6 +880,10 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "nav.editPath": p.EditPath(); break;
             case "nav.downloads": p.Navigate(KnownFolders.Downloads); break;
             case "nav.desktop": p.Navigate(KnownFolders.Desktop); break;
+            case "nav.thisPc": p.Navigate(WinPath.ThisPc); break;
+            case "nav.network": p.Navigate(WinPath.Network); break;
+            case "nav.libraries": p.Navigate(WinPath.Libraries); break;
+            case "nav.controlPanel": p.Navigate(WinPath.ControlPanel); break;
             case "drive.mapNetwork": _ = MapNetworkDriveAsync(); break;
             case "drive.disconnect": _ = DriveActionAsync(p.Folder is { } df ? Drives.For(df) : null, eject: false); break;
             case "drive.eject": _ = DriveActionAsync(p.Folder is { } ef ? Drives.For(ef) : null, eject: true); break;
@@ -854,29 +895,31 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "file.preview": TogglePreview(); break;
             case "copilot.togglePanel": ToggleCopilotPanel(); break;
             case "view.togglePreviewPane": Services.Settings.Preview.PaneVisible = !Services.Settings.Preview.PaneVisible; Services.SaveSettings(); break;
-            case "file.openWith": ForSingle(Shell.OpenWith); break;
+            case "file.openWith": _ = OpenWithAsync(p); break;
+            case "file.openExternal": p.OpenSelectedExternally(); break;
             case "file.rename": _ = RenameAsync(); break;
             case "file.batchRename": _ = BatchRenameAsync(); break;
             case "file.delete": Delete(permanent: false); break;
             case "file.deletePermanent": Delete(permanent: true); break;
-            case "file.copy": _ = SetClipboardAsync(move: false); break;
+            case "file.copy": _ = p.IsCopyOutOnly(p.SelectedPaths) ? CopyOutToClipboardAsync(p) : SetClipboardAsync(move: false); break;
             case "file.cut": _ = SetClipboardAsync(move: true); break;
             case "file.paste": _ = PasteAsync(); break;
             case "edit.undo": RunUndo(redo: false); break;
             case "edit.redo": RunUndo(redo: true); break;
-            case "file.copyToOther": TransferToOther(move: false); break;
+            case "file.copyToOther": if (p.IsCopyOutOnly(p.SelectedPaths)) CopyOutToOther(p); else TransferToOther(move: false); break;
             case "file.moveToOther": TransferToOther(move: true); break;
             case "file.newFolder": _ = NewItemAsync(folder: true); break;
             case "file.newFile": _ = NewItemAsync(folder: false); break;
+            case "file.newFromTemplate": _ = ShowTemplatePaletteAsync(); break;
             case "file.createShortcut": _ = CreateLinkAsync(LinkKind.Shortcut, inOther: false); break;
             case "file.createShortcutInOther": _ = CreateLinkAsync(LinkKind.Shortcut, inOther: true); break;
             case "file.createSymlink": _ = CreateLinkAsync(LinkKind.Symlink, inOther: true); break;
             case "file.createJunction": _ = CreateLinkAsync(LinkKind.Junction, inOther: true); break;
-            case "file.properties": Shell.ShowProperties(Hwnd, p.SelectedPaths.FirstOrDefault() ?? p.Folder ?? ""); break;
+            case "file.properties": ShowProperties(p); break;
             case "file.copyPath": CopyText(string.Join(Environment.NewLine, TargetPaths())); break;
             case "file.copyPathQuoted": CopyText(string.Join(" ", TargetPaths().Select(x => $"\"{x}\""))); break;
             case "file.copyPathForward": CopyText(string.Join(Environment.NewLine, TargetPaths().Select(x => x.Replace('\\', '/')))); break;
-            case "file.copyName": CopyText(string.Join(Environment.NewLine, TargetPaths().Select(Path.GetFileName))); break;
+            case "file.copyName": CopyText(string.Join(Environment.NewLine, p.SelectedItems.Count > 0 ? p.SelectedItems.Select(i => i.Entry.Name) : TargetPaths().Select(Path.GetFileName))); break;
             case "file.selectAll": p.SelectAll(); break;
             case "file.selectNone": p.SelectNone(); break;
             case "file.invertSelection": p.InvertSelection(); break;
@@ -891,7 +934,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
             case "file.extract": StartArchive(compress: false, here: false); break;
             case "file.extractHere": StartArchive(compress: false, here: true); break;
             case "file.archiveCancel": _archiveCts?.Cancel(); break;
-            case "file.showInExplorer": Shell.RevealInExplorer(p.SelectedPaths.FirstOrDefault() ?? p.Folder ?? ""); break;
+            case "file.showInExplorer": Shell.RevealInExplorer(Locations.ParsingName(p.SelectedPaths.FirstOrDefault() ?? p.Folder ?? (p.Tab.IsHome ? "" : p.Tab.Location))); break;
             case "bookmark.add": AddBookmark(p.Folder); break;
             case "bookmark.addSelection": AddBookmark(p.SelectedPaths.FirstOrDefault() ?? p.Folder); break;
             case "bookmark.remove": if (p.Folder is { } bf && Services.Bookmarks.Remove(bf)) { Services.PlacesUpdated(); ShowToast("Bookmark removed"); } break;
@@ -1316,6 +1359,12 @@ internal sealed partial class MainWindow : Window, IPaneHost
     /// <summary>The full Windows context menu for the selection (or the current folder), at the mouse position.</summary>
     public void ShowShellMenu()
     {
+        if (!Active.Tab.Access.IsFileSystem && !Active.Tab.IsRecycleBin && !Active.Tab.IsHome)
+        {
+            ShowVirtualShellMenu(Active);
+            return;
+        }
+
         var paths = Active.SelectedPaths;
         if (paths.Count == 0 && Active.Folder is { } f) paths = [f];
         if (paths.Count == 0) return;
@@ -1336,10 +1385,16 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
         var item = Active.SelectedItems.FirstOrDefault();
         if (item is null) return;
-        _preview ??= new PreviewController(PreviewHost, PreviewTitle, PreviewMeta);
+        if (_preview is null)
+        {
+            _preview = new PreviewController(PreviewHost, PreviewTitle, PreviewMeta);
+            _preview.ForwardedKey += key => HandlePreviewKey(key);
+        }
+
         _preview.MaxText = Services.Settings.Preview.MaxTextMegabytes * 1024L * 1024;
         PreviewOverlay.Visibility = Visibility.Visible;
-        _preview.Show(item.Entry);
+        var pane = Active;
+        _ = ShowPreviewAsync(_preview, pane, item, () => PreviewOverlay.Visibility == Visibility.Visible && pane == Active);
     }
 
     /// <summary>Debounced: arrowing through a list only renders the item you stop on.</summary>
@@ -1372,13 +1427,20 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
         if (string.Equals(item.Path, _previewPanePath, StringComparison.OrdinalIgnoreCase)) return;
         _previewPanePath = item.Path;
-        _previewPane ??= new PreviewController(PreviewPaneContent, PreviewPaneTitle, PreviewPaneMeta) { Compact = true };
+        if (_previewPane is null)
+        {
+            _previewPane = new PreviewController(PreviewPaneContent, PreviewPaneTitle, PreviewPaneMeta) { Compact = true };
+            _previewPane.ForwardedKey += _ => Active.FocusList();
+        }
+
         _previewPane.MaxText = Services.Settings.Preview.MaxTextMegabytes * 1024L * 1024;
-        _previewPane.Show(item.Entry);
+        var path = item.Path;
+        _ = ShowPreviewAsync(_previewPane, Active, item, () => string.Equals(_previewPanePath, path, StringComparison.OrdinalIgnoreCase));
     }
 
     private void ClosePreview()
     {
+        _preview?.Unload();
         PreviewOverlay.Visibility = Visibility.Collapsed;
         Active.FocusList();
     }
@@ -1392,7 +1454,11 @@ internal sealed partial class MainWindow : Window, IPaneHost
                 return true;
             case Windows.System.VirtualKey.Down or Windows.System.VirtualKey.Up:
                 Active.MoveSelection(key == Windows.System.VirtualKey.Down ? 1 : -1);
-                if (Active.SelectedItems.FirstOrDefault() is { } next) _preview?.Show(next.Entry);
+                if (Active.SelectedItems.FirstOrDefault() is { } next && _preview is { } quickLook)
+                {
+                    var pane = Active;
+                    _ = ShowPreviewAsync(quickLook, pane, next, () => PreviewOverlay.Visibility == Visibility.Visible && pane.SelectedItems.FirstOrDefault() == next);
+                }
                 return true;
             case Windows.System.VirtualKey.Enter:
                 ClosePreview();
@@ -1481,14 +1547,10 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
     private IReadOnlyList<string> TargetPaths()
     {
+        // Shell items as their parsing names, which Explorer's address bar and Win+R understand.
         var sel = Active.SelectedPaths;
-        return sel.Count > 0 ? sel : Active.Folder is { } f ? [f] : [];
-    }
-
-    private void ForSingle(Action<string> action)
-    {
-        var sel = Active.SelectedPaths;
-        if (sel.Count == 1) action(sel[0]);
+        var shown = Active.Tab.IsHome || Active.Tab.IsRecycleBin ? null : Active.Tab.Location;
+        return sel.Count > 0 ? [.. sel.Select(Locations.ParsingName)] : shown is not null ? [Locations.ParsingName(shown)] : [];
     }
 
     private void AddBookmark(string? path) => AddBookmark(path, null, null);
@@ -1938,6 +2000,27 @@ internal sealed partial class MainWindow : Window, IPaneHost
         }
     }
 
+    public void CreateShortcuts(IReadOnlyList<string> sources, string targetDirectory)
+    {
+        foreach (var source in sources)
+        {
+            var isDir = Directory.Exists(source);
+            // A drive root ("C:\") has no file name; its letter stands in, without the colon.
+            var name = Links.SuggestName(LinkKind.Shortcut, WinPath.Name(source).Replace(":", "", StringComparison.Ordinal), isDir,
+                n => File.Exists(Path.Combine(targetDirectory, n)) || Directory.Exists(Path.Combine(targetDirectory, n)));
+            if (LinkTools.Create(LinkKind.Shortcut, source, isDir, Path.Combine(targetDirectory, name)) is { } error)
+            {
+                ShowToast(error);
+                break;
+            }
+        }
+
+        foreach (var p in _panes)
+        {
+            if (string.Equals(p.Folder, WinPath.Normalize(targetDirectory), StringComparison.OrdinalIgnoreCase)) p.Refresh();
+        }
+    }
+
     private void CopyText(string text)
     {
         if (text.Length == 0) return;
@@ -2009,8 +2092,8 @@ internal sealed partial class MainWindow : Window, IPaneHost
     private void ShowPalette(PaletteMode mode)
     {
         _paletteMode = mode;
-        _paletteSource = mode switch { PaletteMode.Commands => CommandItems(), PaletteMode.Workspaces => WorkspaceItems(), _ => GoItems() };
-        PaletteBox.PlaceholderText = mode switch { PaletteMode.Commands => "> type a command", PaletteMode.Workspaces => "switch workspace…", _ => "go to bookmark, recent, file or folder…" };
+        _paletteSource = mode switch { PaletteMode.Commands => CommandItems(), PaletteMode.Workspaces => WorkspaceItems(), PaletteMode.Templates => _templateItems, _ => GoItems() };
+        PaletteBox.PlaceholderText = mode switch { PaletteMode.Commands => "> type a command", PaletteMode.Workspaces => "switch workspace…", PaletteMode.Templates => "new file from template…", _ => "go to bookmark, recent, file or folder…" };
         PaletteBox.Text = "";
         PaletteOverlay.Visibility = Visibility.Visible;
         FilterPalette();
@@ -2070,7 +2153,7 @@ internal sealed partial class MainWindow : Window, IPaneHost
 
         PaletteList.ItemsSource = matches;
         PaletteList.SelectedIndex = matches.Count > 0 ? 0 : -1;
-        PaletteFooter.Text = _paletteMode switch { PaletteMode.Commands => $"{matches.Count} commands · Enter run · Esc close", PaletteMode.Workspaces => $"{matches.Count} workspaces · Enter switch · Esc close", _ => $"{matches.Count} results · Enter open · Ctrl+Enter open in other pane" };
+        PaletteFooter.Text = _paletteMode switch { PaletteMode.Commands => $"{matches.Count} commands · Enter run · Esc close", PaletteMode.Workspaces => $"{matches.Count} workspaces · Enter switch · Esc close", PaletteMode.Templates => $"{matches.Count} templates · Enter create · Esc close", _ => $"{matches.Count} results · Enter open · Ctrl+Enter open in other pane" };
     }
 
     private async Task SearchFilesAsync(string query, List<PaletteItem> baseItems)

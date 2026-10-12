@@ -34,6 +34,47 @@ public static class PreviewPolicy
         ["wav"] = "audio/wav",
     };
 
+    /// <summary>Text and source files Monaco shows better than a shell preview handler (PowerToys registers some of them).</summary>
+    private static readonly HashSet<string> TextTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "txt", "text", "md", "markdown", "log", "csv", "tsv", "json", "jsonc", "json5", "xml", "xaml", "xsd", "xsl", "xslt", "yaml", "yml", "toml",
+        "ini", "cfg", "conf", "config", "env", "properties", "reg", "inf", "nfo", "rst", "tex", "diff", "patch",
+        "cs", "csx", "vb", "fs", "fsx", "fsi", "c", "h", "cpp", "hpp", "cc", "cxx", "hh", "hxx", "m", "mm", "java", "kt", "kts", "scala", "groovy", "gradle",
+        "js", "mjs", "cjs", "ts", "mts", "cts", "jsx", "tsx", "css", "scss", "sass", "less", "vue", "svelte", "go", "rs", "py", "pyw", "rb", "php", "pl", "pm",
+        "swift", "dart", "lua", "r", "sql", "sh", "bash", "zsh", "fish", "ps1", "psm1", "psd1", "bat", "cmd", "asm", "hs", "ex", "exs", "erl", "clj", "el", "lisp",
+        "sln", "slnx", "csproj", "vbproj", "fsproj", "vcxproj", "props", "targets", "resx", "manifest", "editorconfig", "gitignore", "gitattributes",
+        "dockerfile", "makefile", "cmake", "tf", "hcl", "proto", "graphql", "gql", "lock",
+    };
+
+    /// <summary>
+    /// Whether a registered shell preview handler (ADR 0009) should show files with <paramref name="extension"/> (without
+    /// dot). Pollux keeps images, its web previews (HTML, SVG, PDF, media) and text/code; everything else (Office documents,
+    /// .msg, .eml, Visio, fonts, unknown types) goes to the handler when one is registered.
+    /// </summary>
+    public static bool PrefersShellHandler(string extension) =>
+        extension.Length > 0 && !Images.Contains(extension) && !WebTypes.ContainsKey(extension) && !TextTypes.Contains(extension);
+
+    /// <summary>
+    /// Whether a file whose <c>Zone.Identifier</c> stream holds <paramref name="zoneIdentifier"/> (null: none) may go to a
+    /// shell preview handler. Files from the Internet or Restricted zone (ZoneId 3 or 4) never do, like Explorer since
+    /// its 2025 preview hardening: a handler could follow links in them and leak NTLM credentials. Unreadable zone
+    /// data counts as Internet.
+    /// </summary>
+    public static bool AllowsShellHandler(string? zoneIdentifier)
+    {
+        if (zoneIdentifier is null) return true;
+        foreach (var raw in zoneIdentifier.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (!line.StartsWith("ZoneId", StringComparison.OrdinalIgnoreCase)) continue;
+            var eq = line.IndexOf('=', StringComparison.Ordinal);
+            if (eq < 0) return false;
+            return int.TryParse(line[(eq + 1)..].Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var zone) && zone < 3;
+        }
+
+        return false;
+    }
+
     /// <summary>The preview mode for a file extension (without dot).</summary>
     public static PreviewMode ModeFor(string extension) =>
         Images.Contains(extension) ? PreviewMode.NativeImage

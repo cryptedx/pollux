@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.6.0 — 2026-10-12
+
+### Added
+
+- **Drag & drop like Explorer:** drop onto a folder row, path segment or tab; same-volume drops move, others copy; `Ctrl` copies, `Shift` moves, `Alt` or `Ctrl+Shift` creates shortcuts; right-button drags from other apps show a *Copy here / Move here / Create shortcuts here* menu. Dropping a folder onto itself or into its own subfolder is refused.
+- Rubber-band selection with the mouse in Details, Tiles and Large Icons (`Shift` adds, `Ctrl` toggles, auto-scroll at the edges).
+- Middle-click on a folder, path segment or sidebar entry opens it in a background Tab.
+- Real Windows icons in Details, Tiles and Large Icons.
+- **Details columns** can be resized (double-click the edge to reset), reordered and toggled from the header; new settings `files.columnOrder` and `files.columnWidths`. New property columns read from the files on screen: Dimensions, Duration, Authors, Title, File version, Company and Date taken (never on network drives or cloud-only files), with *Sort: By …* commands for each.
+- Path bar: `›` after each segment lists its subfolders; typing in the path box suggests folders and files (`Up`/`Down`, `Tab`).
+- **Virtual locations:** *Go: This PC*, *Go: Network*, *Go: Libraries* and *Go: Control Panel*, `\\server` listing its shares (with *Sign in…* when access is refused), phones and cameras, and `.zip` files opened like folders (`Enter`; `Ctrl+Enter` opens in the associated app). They are read-only: copy out, open and Properties work; changes are refused. Home has a This PC tile and the sidebar a This PC and Network row.
+- **New** submenu in the empty-area context menu and *File: New from Template…* with the file types registered in Windows (Word, Excel, …); the new file is selected and renamed, and undo covers it.
+- Office documents, mail and other files with a Windows preview handler show in the Preview pane and Quick Look (`preview.useShellHandlers`, on by default; not for files from the Internet zone, not in the Admin Instance). Handlers run in `prevhost.exe`, never inside Pollux.
+- **Per-folder views:** each folder remembers its view mode, sort, grouping and Details columns (`files.rememberFolderViews`, on by default); *View: Reset View for This Folder* and *View: Apply View to Subfolders*.
+
+### Fixed
+
+- *Up* selects the folder you came from after listing again.
+
 ## 1.5.6 — 2026-10-12
 
 ### Fixed

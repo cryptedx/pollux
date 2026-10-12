@@ -7,6 +7,9 @@ public sealed record PolluxPaths(string ConfigDirectory, string DataDirectory, s
 {
     private const string AppFolder = "Pollux";
 
+    /// <summary>Per-folder view settings (view mode, sort, grouping).</summary>
+    public string FolderViewsFile => Path.Combine(DataDirectory, "folder-views.json");
+
     public static PolluxPaths FromEnvironment(Func<string, string?> getEnvironmentVariable)
     {
         var roaming = Require(getEnvironmentVariable, "APPDATA");

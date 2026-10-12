@@ -112,6 +112,7 @@ public sealed partial class PaneView
 
         _searchCts?.Cancel();
         var cts = _searchCts = new CancellationTokenSource();
+        CancelPropertyReads();
         _searchHits = [];
         PresentSearch();
         _ = RunSearchAsync(root, query, cts);
@@ -184,10 +185,7 @@ public sealed partial class PaneView
         _searchItems = new ObservableCollection<FileItem>(_visible);
         List.ItemsSource = _searchItems;
         // Results keep the order they were found in (shallow folders first); the Name column shows the relative path.
-        SortName.Content = "Path";
-        SortModified.Content = "Modified";
-        SortType.Content = "Type";
-        SortSize.Content = "Size";
+        UpdateSortHeader();
 
         var selected = focus is not null
             ? _visible.Where(i => string.Equals(i.Entry.Name, focus, StringComparison.OrdinalIgnoreCase)).Take(1).ToList()

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Pollux.Core.Settings;
@@ -31,6 +32,9 @@ public static class SettingsStore
         s.App ??= new();
         s.Files ??= new();
         s.Files.TrustedFolders ??= [];
+        s.Files.Columns ??= [];
+        s.Files.ColumnOrder ??= [];
+        s.Files.ColumnWidths ??= [];
         s.Tabs ??= new();
         s.Sidebar ??= new();
         s.Recent ??= new();
@@ -66,6 +70,23 @@ public static class SettingsStore
 
     public static string Serialize(PolluxSettings settings) =>
         JsonSerializer.Serialize(settings, SettingsJsonContext.Default.PolluxSettings);
+
+    /// <summary>
+    /// The settings as JSON without the Details column layout (files.columns, columnOrder, columnWidths): the same
+    /// before and after a column was shown, hidden, moved or resized, so file lists need not be built again.
+    /// </summary>
+    public static string WithoutColumns(PolluxSettings settings)
+    {
+        var node = JsonNode.Parse(Serialize(settings))!;
+        if (node["files"] is JsonObject files)
+        {
+            files.Remove("columns");
+            files.Remove("columnOrder");
+            files.Remove("columnWidths");
+        }
+
+        return node.ToJsonString();
+    }
 
     public static SettingsResult Load(string file, PolluxSettings? fallback = null)
     {

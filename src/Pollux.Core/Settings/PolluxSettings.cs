@@ -4,7 +4,8 @@ public enum ThemeMode { System, Light, Dark }
 
 public enum Density { Compact, Comfortable }
 
-public enum SortColumn { Name, Modified, Type, Size, Created, Attributes, Extension }
+/// <summary>What a file list sorts by: a built-in column, or (from <see cref="Dimensions"/> on) a shell property column.</summary>
+public enum SortColumn { Name, Modified, Type, Size, Created, Attributes, Extension, Dimensions, Duration, Authors, Title, FileVersion, Company, DateTaken }
 
 /// <summary>How the Details view groups its rows under headers.</summary>
 public enum GroupBy { None, Type, Modified }
@@ -71,6 +72,8 @@ public sealed class PreviewSettings
     public double PaneWidth { get; set; } = 380;
     /// <summary>Files larger than this are shown as hex instead of text.</summary>
     public int MaxTextMegabytes { get; set; } = 4;
+    /// <summary>Show Office documents, mails, fonts etc. with the preview handlers Windows has registered (ADR 0009).</summary>
+    public bool UseShellHandlers { get; set; } = true;
 }
 
 public sealed class AppearanceSettings
@@ -115,8 +118,12 @@ public sealed class FilesSettings
     public bool FoldersFirst { get; set; } = true;
     public SortColumn SortBy { get; set; } = SortColumn.Name;
     public bool SortDescending { get; set; }
-    /// <summary>Optional Details columns that are shown: "created", "attributes", "extension".</summary>
+    /// <summary>Details columns shown beyond Name, Modified, Type and Size (ids: "created", "dimensions", …).</summary>
     public List<string> Columns { get; set; } = [];
+    /// <summary>Every shown Details column left to right (ids); empty: Name, Modified, Type, Size, then <see cref="Columns"/>.</summary>
+    public List<string> ColumnOrder { get; set; } = [];
+    /// <summary>Details column widths the user changed, by id (e.g. {"name": 320, "dimensions": 96}).</summary>
+    public Dictionary<string, double> ColumnWidths { get; set; } = [];
     public GroupBy GroupBy { get; set; } = GroupBy.None;
     public string DateFormat { get; set; } = "yyyy-MM-dd HH:mm";
     public bool ConfirmDelete { get; set; }
@@ -138,6 +145,11 @@ public sealed class FilesSettings
     public int SlowFolderSeconds { get; set; } = 5;
     /// <summary>View mode of a Tab that has not picked its own (view.details / view.tiles / view.icons).</summary>
     public Files.ViewMode ViewMode { get; set; } = Files.ViewMode.Details;
+    /// <summary>
+    /// Each folder remembers its own view mode, sort, grouping and Details columns; the settings above are the defaults
+    /// for folders without one. Off: view mode per Tab, sort, grouping and columns global.
+    /// </summary>
+    public bool RememberFolderViews { get; set; } = true;
 }
 
 public sealed class TabsSettings

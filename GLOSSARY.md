@@ -17,8 +17,12 @@ A single open location inside a Pane.
 _Avoid_: Page, view
 
 **View Mode**:
-How a Tab lays out its entries: Details (rows with columns), Tiles or Large Icons (with thumbnails). Each Tab keeps its own.
+How a Tab lays out its entries: Details (rows with columns), Tiles or Large Icons (with thumbnails). Part of the Folder View; without per-folder views each Tab keeps its own.
 _Avoid_: Layout, view (alone)
+
+**Folder View**:
+What a location remembers about how it is shown: View Mode, sort, grouping and Details columns. A location without one uses the nearest ancestor applied to subfolders, else the global settings.
+_Avoid_: Folder settings, view state
 
 **Bookmark**:
 A location (folder or file) the user explicitly saved for fast access. Global unless it belongs to a Workspace.
@@ -31,6 +35,26 @@ _Avoid_: Frequent, history, MRU
 **Home**:
 The default view of a new Tab: Bookmarks, Recent and drives at a glance.
 _Avoid_: Start page, This PC, dashboard
+
+**Virtual Location**:
+A location in a Tab that is not a folder on disk: a Zip Folder, a Server Location or a Shell Location. Read-only: its items can be opened and (except a server's shares) copied out, but nothing is pasted, dropped, renamed or deleted there.
+_Avoid_: Virtual folder, special folder
+
+**Zip Folder**:
+A .zip file, or a folder inside one, browsed like a folder: Enter on a .zip goes in. Opening a file extracts it read-only to Pollux's temp folder; copying items out extracts them.
+_Avoid_: Archive view, compressed folder
+
+**Server Location**:
+A server alone (`\\server`), listing its shared folders. Reached only by the user's own navigation, like Network (ADR 0010).
+_Avoid_: Network share (for the list), host
+
+**Shell Location**:
+A folder of the Windows shell without a path of its own: This PC, Network, Control Panel, Libraries, a phone or camera. Listed, opened and copied from through Windows itself.
+_Avoid_: Special folder, namespace extension
+
+**Preview Handler**:
+A Windows component registered for a file type (Office, mail, fonts) that draws the preview for the Preview Pane and Quick Look. It runs in a separate Windows process, never in Pollux, and not for files downloaded from the Internet.
+_Avoid_: Previewer, viewer plugin
 
 **Workspace**:
 A saved working state the user switches between: Pane layout, open Tabs per Pane, Workspace-scoped Bookmarks and the terminal start folder.

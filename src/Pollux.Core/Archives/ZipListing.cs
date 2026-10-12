@@ -7,7 +7,7 @@ namespace Pollux.Core.Archives;
 public sealed record ZipEntryInfo(string FullName, long Length, DateTime Modified);
 
 /// <summary>Turns the flat entry list of a .zip into folder views, so an archive can be browsed read-only like a directory.
-/// Not shipped yet: the app does not browse into archives, so only the tests use this (like <see cref="ZipPath"/> and <see cref="ZipArchiver.ExtractSelection"/>).</summary>
+/// <see cref="ZipFolder"/> lists zip folders in a Tab through it.</summary>
 public static class ZipListing
 {
     public static IReadOnlyList<ZipEntryInfo> ReadEntries(string zipPath)

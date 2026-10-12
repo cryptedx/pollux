@@ -2,21 +2,59 @@ using Pollux.Core.Settings;
 
 namespace Pollux.Core.Files;
 
-/// <summary>Sorts like Explorer: folders first (optional), natural number order ("file2" before "file10").</summary>
-public sealed class EntryComparer(SortColumn column, bool descending, bool foldersFirst) : IComparer<FileEntry>
+/// <summary>
+/// Sorts like Explorer: folders first (optional), natural number order ("file2" before "file10"). A shell property
+/// column sorts by the values in <see cref="PropertyValues"/>; entries without one (or not read yet) come last in
+/// either direction.
+/// </summary>
+public sealed class EntryComparer : IComparer<FileEntry>
 {
+    private readonly SortColumn _column;
+    private readonly ShellProperty? _property;
+    private readonly PropertyValues? _properties;
+    private readonly bool _descending;
+    private readonly bool _foldersFirst;
+
+    public EntryComparer(SortColumn column, bool descending, bool foldersFirst)
+    {
+        _column = column;
+        _descending = descending;
+        _foldersFirst = foldersFirst;
+    }
+
+    /// <param name="column">Any known column; one that cannot sort sorts by name.</param>
+    /// <param name="descending">Reverse order (entries without a property value stay last).</param>
+    /// <param name="foldersFirst">Folders before files.</param>
+    /// <param name="properties">The values a shell property column sorts by.</param>
+    public EntryComparer(ListColumn column, bool descending, bool foldersFirst, PropertyValues? properties = null)
+        : this(column.Sortable ? column.Sort ?? SortColumn.Name : SortColumn.Name, descending, foldersFirst)
+    {
+        _property = column.Sortable ? column.Property : null;
+        _properties = properties;
+    }
+
     public int Compare(FileEntry? x, FileEntry? y)
     {
         if (ReferenceEquals(x, y)) return 0;
         if (x is null) return -1;
         if (y is null) return 1;
 
-        if (foldersFirst && x.IsDirectory != y.IsDirectory)
+        if (_foldersFirst && x.IsDirectory != y.IsDirectory)
         {
             return x.IsDirectory ? -1 : 1;
         }
 
-        var result = column switch
+        if (_property is { } property)
+        {
+            var a = _properties?.Get(x, property);
+            var b = _properties?.Get(y, property);
+            if (a is null != b is null) return a is null ? 1 : -1;
+            var byValue = a is { } va && b is { } vb ? PropertyValue.Compare(va, vb) : 0;
+            if (byValue == 0) byValue = NaturalCompare(x.Name, y.Name);
+            return _descending ? -byValue : byValue;
+        }
+
+        var result = _column switch
         {
             SortColumn.Modified => x.Modified.CompareTo(y.Modified),
             SortColumn.Size => x.Size.CompareTo(y.Size),
@@ -32,7 +70,7 @@ public sealed class EntryComparer(SortColumn column, bool descending, bool folde
             result = NaturalCompare(x.Name, y.Name);
         }
 
-        return descending ? -result : result;
+        return _descending ? -result : result;
     }
 
     public static int NaturalCompare(string a, string b)

@@ -27,6 +27,14 @@ public sealed class PolluxPathsTests
     }
 
     [TestMethod]
+    public void FolderViewsFileLivesInLocalAppData()
+    {
+        var paths = PolluxPaths.FromEnvironment(name => Env.GetValueOrDefault(name));
+
+        Assert.AreEqual(Path.Combine(Env["LOCALAPPDATA"], "Pollux", "folder-views.json"), paths.FolderViewsFile);
+    }
+
+    [TestMethod]
     public void MissingEnvironmentVariableFailsLoudly()
     {
         var ex = Assert.ThrowsExactly<InvalidOperationException>(

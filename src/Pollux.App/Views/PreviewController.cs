@@ -9,7 +9,10 @@ using Pollux.Core.Files;
 
 namespace Pollux.App.Views;
 
-/// <summary>Quick Look: Space shows the selected file (image, text/code via Monaco, PDF via the built-in viewer, hex for binaries).</summary>
+/// <summary>
+/// Quick Look: Space shows the selected file (image, text/code via Monaco, PDF via the built-in viewer, Office documents,
+/// mails, fonts etc. via their Windows preview handler (ADR 0009), hex for binaries).
+/// </summary>
 internal sealed class PreviewController(Grid host, TextBlock title, TextBlock meta)
 {
     private WebView2? _codeView;
@@ -23,6 +26,8 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
     /// <summary>The one file the file preview's request handler serves (S-07); read at request time.</summary>
     private string? _webFile;
 
+    private ShellPreviewHost? _shell;
+
     public string? CurrentPath { get; private set; }
 
     /// <summary>Narrow side-pane mode: no minimap, wrapped text.</summary>
@@ -31,12 +36,16 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
     /// <summary>Text files up to this size are shown as text; larger ones as hex.</summary>
     public long MaxText { get; set; } = 4 * 1024 * 1024;
 
+    /// <summary>A key a Windows preview handler passed back while it had focus (Escape); focus is already back in Pollux.</summary>
+    public event Action<Windows.System.VirtualKey>? ForwardedKey;
+
     public void Show(FileEntry entry)
     {
         CurrentPath = entry.FullPath;
         title.Text = entry.Name;
         meta.Text = entry.IsDirectory ? "Folder" : $"{Format.Size(entry.Size)} · {entry.Modified:yyyy-MM-dd HH:mm} · {Format.TypeLabel(entry)}";
         host.Children.Clear();
+        _shell?.Clear();
 
         if (entry.IsDirectory)
         {
@@ -50,10 +59,56 @@ internal sealed class PreviewController(Grid host, TextBlock title, TextBlock me
         {
             _ = ShowInBrowserAsync(entry.FullPath);
         }
+        else if (UsesShellHandlers && PreviewPolicy.PrefersShellHandler(entry.Extension))
+        {
+            _ = ShowWithHandlerAsync(entry);
+        }
         else
         {
             _ = ShowFileAsync(entry);
         }
+    }
+
+    /// <summary>An item with nothing to read (a shell item, a share, a large file in a zip): its name and why.</summary>
+    public void ShowUnavailable(FileEntry entry, string message)
+    {
+        CurrentPath = entry.FullPath;
+        title.Text = entry.Name;
+        meta.Text = entry.IsDirectory ? "Folder" : Format.TypeLabel(entry);
+        host.Children.Clear();
+        _shell?.Clear();
+        host.Children.Add(Message(message));
+    }
+
+    /// <summary>
+    /// Windows preview handlers are on (<c>preview.useShellHandlers</c>), except in the Admin Instance: the surrogate would
+    /// run third-party handler code elevated.
+    /// </summary>
+    private static bool UsesShellHandlers => App.Instance.Services.Settings.Preview.UseShellHandlers && !MainWindow.IsElevated;
+
+    /// <summary>Hides and unloads a Windows preview handler (Quick Look closed); the next <see cref="Show"/> starts over.</summary>
+    public void Unload() => _shell?.Clear();
+
+    /// <summary>The file's Windows preview handler when it has a usable one, else Pollux's own text/hex preview.</summary>
+    private async Task ShowWithHandlerAsync(FileEntry entry)
+    {
+        var path = entry.FullPath;
+        var clsid = await Task.Run(() => ShellPreviewHost.HandlerFor(entry.Extension, path));
+        if (CurrentPath != path) return;
+        if (clsid is { } c)
+        {
+            if (_shell is null)
+            {
+                _shell = new ShellPreviewHost(host);
+                _shell.ForwardedKey += key => ForwardedKey?.Invoke(key);
+            }
+
+            var result = await _shell.ShowAsync(c, path);
+            if (result != ShellPreviewResult.Failed || CurrentPath != path) return;
+            host.Children.Clear();
+        }
+
+        await ShowFileAsync(entry);
     }
 
     /// <summary>Sniffing and hex reading happen off the UI thread, so slow or network files never block arrowing.</summary>

@@ -16,7 +16,6 @@ using Pollux.Core.Navigation;
 using Pollux.Core.Session;
 using Pollux.Core.Settings;
 using Windows.ApplicationModel.DataTransfer;
-using Windows.Storage;
 using Windows.System;
 
 namespace Pollux.App.Views;
@@ -51,8 +50,10 @@ public sealed partial class PaneView : UserControl
     {
         _tabs = new PaneTabs(NewTabLocation);
         InitializeComponent();
+        InitializeColumns();
         // Mouse back/forward buttons, like Explorer. handledEventsToo: the ListView swallows presses on items.
         AddHandler(PointerPressedEvent, new PointerEventHandler(OnXButtonPressed), handledEventsToo: true);
+        foreach (var list in (ListView[])[DetailsList, TilesList, IconsList]) _ = new MarqueeSelection(list, MarqueeLayer, () => _host.OnPaneActivated(this));
     }
 
     private void OnXButtonPressed(object sender, PointerRoutedEventArgs e)
@@ -60,6 +61,14 @@ public sealed partial class PaneView : UserControl
         var props = e.GetCurrentPoint(this).Properties;
         if (props.IsXButton1Pressed) Back();
         else if (props.IsXButton2Pressed) Forward();
+        else if (props.IsMiddleButtonPressed)
+        {
+            // Like a browser's background tab: the folder opens next to the current Tab, which stays shown.
+            if (MiddleClickFolder(e.OriginalSource as DependencyObject) is not { } folder) return;
+            NewTab(folder, activate: false);
+            e.Handled = true;
+            return;
+        }
         else
         {
             // Primary presses only (touch and pen report as left): right-click has List_RightTapped, and a queued
@@ -116,6 +125,9 @@ public sealed partial class PaneView : UserControl
     internal void Initialize(IPaneHost host, PaneSession session)
     {
         _host = host;
+        ApplyColumnSettings();
+        PropertyColumns.UseDateFormat(Settings.Files.DateFormat);
+        _appliedSettings = SettingsStore.WithoutColumns(Settings);
         _tabs.Load(session);
         RenderTabs();
         _ = ShowCurrentAsync();
@@ -130,6 +142,7 @@ public sealed partial class PaneView : UserControl
         _loadCts?.Cancel();
         _searchCts?.Cancel();
         _sizesCts?.Cancel();
+        _propertiesCts.Cancel();
         _sizesTimer?.Stop();
         _reloadTimer?.Stop();
         StopWatching();
@@ -214,7 +227,9 @@ public sealed partial class PaneView : UserControl
     private string NewTabLocation()
     {
         var l = _host?.Services.Settings.Tabs.NewTabLocation ?? "home";
-        return l.Equals("home", StringComparison.OrdinalIgnoreCase) || !Directory.Exists(l) ? WinPath.Home : l;
+        if (l.Equals("home", StringComparison.OrdinalIgnoreCase)) return WinPath.Home;
+        l = Locations.Normalize(l);
+        return Locations.Classify(l) == LocationKind.Folder && !Directory.Exists(l) ? WinPath.Home : l;
     }
 
     private void RenderTabs()
@@ -225,8 +240,8 @@ public sealed partial class PaneView : UserControl
             var index = i;
             var on = i == ActiveTabIndex;
             var title = new TextBlock { Text = Tabs[i].Title, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 150 };
-            var icon = Tabs[i].IsHome || Tabs[i].IsRecycleBin
-                ? (FrameworkElement)new TextBlock { Text = Tabs[i].IsHome ? "⌂" : "♻", FontSize = 12, VerticalAlignment = VerticalAlignment.Center }
+            var icon = TabGlyph(Tabs[i]) is { } glyph
+                ? (FrameworkElement)new TextBlock { Text = glyph, FontSize = 12, VerticalAlignment = VerticalAlignment.Center }
                 : new Border { Width = 14, Height = 10, CornerRadius = new CornerRadius(2, 3, 2, 2), Background = Res("PolluxFolderBrush"), VerticalAlignment = VerticalAlignment.Center };
             var close = new Button
             {
@@ -276,6 +291,7 @@ public sealed partial class PaneView : UserControl
                 AcceptDraggedTab(index);
             };
             tab.DropCompleted += (_, _) => _draggedTab = null;
+            AcceptFileDrops(tab, Tabs[i].Folder);
             // Activate on Tapped (not PointerPressed): rebuilding the strip on press would remove the tab being dragged.
             tab.Tapped += (_, _) =>
             {
@@ -334,8 +350,9 @@ public sealed partial class PaneView : UserControl
     {
         if (location != WinPath.Home)
         {
-            location = WinPath.Normalize(location);
-            if (File.Exists(location))
+            location = Locations.Normalize(location);
+            // A .zip is entered like a folder; any other file opens.
+            if (Locations.Classify(location) == LocationKind.Folder && File.Exists(location))
             {
                 Shell.Open(location);
                 return;
@@ -353,14 +370,6 @@ public sealed partial class PaneView : UserControl
 
     internal void Back() => Step(Tab.History.Back(), childToFocus: null);
     internal void Forward() => Step(Tab.History.Forward(), childToFocus: null);
-
-    internal void Up()
-    {
-        if (Tab.IsHome) return;
-        var parent = WinPath.Parent(Tab.Location);
-        if (parent is null) Navigate(WinPath.Home);
-        else Navigate(parent, WinPath.Name(Tab.Location));
-    }
 
     private void Step(string? location, string? childToFocus)
     {
@@ -405,6 +414,7 @@ public sealed partial class PaneView : UserControl
     {
         _loadCts?.Cancel();
         _sizesCts?.Cancel();
+        CancelPropertyReads();
         var cts = _loadCts = new CancellationTokenSource();
         var tab = Tab;
         if (tab.Location != _sizesLocation)
@@ -419,6 +429,7 @@ public sealed partial class PaneView : UserControl
         RenderCrumbs();
         ApplyFilterBar();
         _error = null;
+        SignInButton.Visibility = Visibility.Collapsed;
         _host.OnPaneStateChanged(this);
 
         if (tab.IsHome)
@@ -442,7 +453,9 @@ public sealed partial class PaneView : UserControl
 
         HomeHost.Visibility = Visibility.Collapsed;
         ListHost.Visibility = Visibility.Visible;
-        _host.Services.VisitLocation(tab.Location);
+        var fileSystem = tab.Access.IsFileSystem;
+        if (fileSystem) _host.Services.VisitLocation(tab.Location);
+        else StopWatching();
 
         var started = DateTime.UtcNow;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -465,7 +478,7 @@ public sealed partial class PaneView : UserControl
         string? fileFolder = null;
         try
         {
-            await foreach (var batch in DirectoryReader.ReadAsync(tab.Location, 300, cts.Token))
+            await foreach (var batch in VirtualLocations.Reader.ReadAsync(tab.Location, 300, cts.Token))
             {
                 all.AddRange(batch);
                 if (first)
@@ -482,12 +495,16 @@ public sealed partial class PaneView : UserControl
         {
             return;
         }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException or InvalidDataException)
         {
             // A Tab restored from a Session (or written by a build that browses .zip files) can point at a file:
             // show its folder with the file selected instead of the OS error ("The parameter is incorrect").
             if (ex is IOException && File.Exists(tab.Location)) fileFolder = WinPath.Parent(tab.Location);
-            if (fileFolder is null) _error = ex is DirectoryNotFoundException ? "Folder not found." : ex.Message;
+            if (fileFolder is null)
+            {
+                _error = ex is DirectoryNotFoundException ? "Folder not found." : ex.Message;
+                OfferSignIn(tab, ex);
+            }
         }
         finally
         {
@@ -506,9 +523,18 @@ public sealed partial class PaneView : UserControl
         }
 
         LoadingBar.Visibility = Visibility.Collapsed;
+        // The first batch was shown with the focus name (the child Up came from); listing again must keep it selected.
+        if (!first) RememberSelection();
         _entries = all;
         Present(tab);
         CrashLog.Trace($"folder {tab.Location}: all {all.Count} rows after {stopwatch.ElapsedMilliseconds} ms");
+        if (!fileSystem)
+        {
+            _ = NameShellLocationAsync(tab);
+            ListingChanged?.Invoke();
+            return;
+        }
+
         Watch(tab.Location);
         _ = LoadGitStatusAsync(tab, cts.Token);
         if (_sizesWanted || (Settings.Files.AutoFolderSizes && IsLocalDrive(tab.Location))) StartFolderSizes(tab, recomputeAll: false);
@@ -567,11 +593,12 @@ public sealed partial class PaneView : UserControl
         }
 
         var s = Settings.Files;
-        var listing = FolderProjection.Project(_entries, tab.Location, Settings, tab.Filter, _git, tab.SelectedNames, tab.FocusName, folderSizes: _folderSizes);
+        var view = _view = CurrentView(tab);
+        ApplyColumnSettings();
+        var listing = FolderProjection.Project(_entries, tab.Location, Settings, tab.Filter, _git, tab.SelectedNames, tab.FocusName, folderSizes: _folderSizes, properties: PropertyColumns.Values, view: view);
         tab.FocusName = null;
-        var columns = ListColumns.Parse(s.Columns);
         var compared = ComparedNow(tab);
-        var items = listing.Rows.Select(r => new FileItem(r.Entry, s.DateFormat, s.ShowExtensions, columns, folderSizeKnown: _folderSizes.ContainsKey(r.Entry.FullPath))
+        var items = listing.Rows.Select(r => new FileItem(r.Entry, s.DateFormat, s.ShowExtensions, folderSizeKnown: _folderSizes.ContainsKey(r.Entry.FullPath))
         {
             Highlights = r.Highlights,
             Git = r.Git,
@@ -579,7 +606,7 @@ public sealed partial class PaneView : UserControl
             CompareFrom = _compareSide,
         }).ToList();
 
-        ShowViewMode(ViewModes.Effective(tab.ViewMode, s.ViewMode));
+        ShowViewMode(view.Mode);
         _visible = items;
         if (listing.Groups is { Count: > 0 } groups && _shownMode == ViewMode.Details)
         {
@@ -599,7 +626,7 @@ public sealed partial class PaneView : UserControl
         UpdateSortHeader();
 
         EmptyText.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        EmptyText.Text = _error ?? (string.IsNullOrEmpty(tab.Filter) ? (tab.IsRecycleBin ? "Recycle Bin is empty" : "empty folder") : "no matches");
+        EmptyText.Text = _error ?? (string.IsNullOrEmpty(tab.Filter) ? EmptyLabel(tab) : "no matches");
         FilterCount.Text = $"{items.Count}/{_entries.Count}";
         PresentGitInfo(tab);
 
@@ -607,7 +634,8 @@ public sealed partial class PaneView : UserControl
         if (listing.Selected.Count > 0) List.ScrollIntoView(items[listing.Selected[0]]);
 
         _host.OnPaneStateChanged(this);
-        if (_isActive && FocusManager.GetFocusedElement(XamlRoot) is not TextBox) FocusListSoon();
+        if (_isActive && (XamlRoot is not { } xamlRoot || FocusManager.GetFocusedElement(xamlRoot) is not TextBox)) FocusListSoon();
+        LoadSortProperties(tab);
     }
 
     private void FocusListSoon() => DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, FocusList);
@@ -615,7 +643,7 @@ public sealed partial class PaneView : UserControl
     /// <summary>Computes the sizes of the folders in the listing in the background (View: Calculate Folder Sizes).</summary>
     internal void CalculateFolderSizes()
     {
-        if (!Tab.IsHome) StartFolderSizes(Tab, recomputeAll: true);
+        if (Tab.Access.IsFileSystem) StartFolderSizes(Tab, recomputeAll: true);
     }
 
     private static bool IsLocalDrive(string path)
@@ -673,7 +701,7 @@ public sealed partial class PaneView : UserControl
             if (item.IsDirectory && _folderSizes.TryGetValue(item.Path, out var size)) item.SetFolderSize(size);
         }
 
-        if (final && Settings.Files.SortBy == SortColumn.Size)
+        if (final && _view?.SortBy == SortColumn.Size)
         {
             RememberSelection();
             Present(Tab);
@@ -752,17 +780,6 @@ public sealed partial class PaneView : UserControl
 
     // ---------------- view mode ----------------
 
-    /// <summary>The view mode of the active Tab: its own, or the files.viewMode setting.</summary>
-    internal ViewMode ViewMode => ViewModes.Effective(Tab.ViewMode, Settings.Files.ViewMode);
-
-    /// <summary>Gives the active Tab its own view mode (kept in the session) and shows it, keeping the selection.</summary>
-    internal void SetViewMode(ViewMode mode)
-    {
-        RememberSelection();
-        Tab.ViewMode = mode;
-        if (!Tab.IsHome) Present(Tab);
-    }
-
     /// <summary>The ListView of the shown view mode; every list operation goes through it.</summary>
     private ListView List => ListFor(_shownMode);
 
@@ -781,7 +798,8 @@ public sealed partial class PaneView : UserControl
     {
         if (mode == _shownMode) return;
         var old = List;
-        var hadFocus = FocusManager.GetFocusedElement(XamlRoot) is DependencyObject f && IsWithin(f, old);
+        // A remembered mode is shown on the first listing too, before the window has a XamlRoot (asking it then throws).
+        var hadFocus = XamlRoot is { } root && FocusManager.GetFocusedElement(root) is DependencyObject f && IsWithin(f, old);
         old.ItemsSource = null;
         old.Visibility = Visibility.Collapsed;
         _shownMode = mode;
@@ -800,6 +818,17 @@ public sealed partial class PaneView : UserControl
     /// Tiles and Large Icons: the shell thumbnail over the folder/badge fallback. Asked for when a container is
     /// realized, so only entries on (or near) the screen load; cached thumbnails show at once.
     /// </summary>
+    /// <summary>Asks for the shell icon of a realized row; the folder/badge drawing shows until it arrives.</summary>
+    private void ShowIcon(ContentControl container, FileItem item)
+    {
+        var dips = _shownMode == ViewMode.Details ? 16 : 48;
+        var key = Icons.KeyFor(item.Entry, dips, XamlRoot?.RasterizationScale ?? 1);
+        item.Icon = Icons.Get(key, DispatcherQueue, loaded =>
+        {
+            if (ReferenceEquals(container.Content, item)) item.Icon = loaded;
+        });
+    }
+
     private void ShowThumbnail(ContentControl container, Grid root, FileItem item)
     {
         if (root.Children[0] is not Grid icon || icon.Children[0] is not UIElement fallback || icon.Children[1] is not Image image) return;
@@ -822,73 +851,31 @@ public sealed partial class PaneView : UserControl
         Refresh();
     }
 
-    private void UpdateSortHeader()
-    {
-        var s = Settings.Files;
-        var arrow = s.SortDescending ? " ↓" : " ↑";
-        SortName.Content = "Name" + (s.SortBy == SortColumn.Name ? arrow : "");
-        SortModified.Content = (Tab.IsRecycleBin ? "Deleted" : "Modified") + (s.SortBy == SortColumn.Modified ? arrow : "");
-        SortType.Content = "Type" + (s.SortBy == SortColumn.Type ? arrow : "");
-        SortSize.Content = "Size" + (s.SortBy == SortColumn.Size ? arrow : "");
-        var columns = ListColumns.Parse(s.Columns);
-        SortCreated.Content = "Created" + (s.SortBy == SortColumn.Created ? arrow : "");
-        SortAttributes.Content = "Attr" + (s.SortBy == SortColumn.Attributes ? arrow : "");
-        SortExtension.Content = "Ext" + (s.SortBy == SortColumn.Extension ? arrow : "");
-        SortCreated.Visibility = columns.HasFlag(OptionalColumns.Created) ? Visibility.Visible : Visibility.Collapsed;
-        SortAttributes.Visibility = columns.HasFlag(OptionalColumns.Attributes) ? Visibility.Visible : Visibility.Collapsed;
-        SortExtension.Visibility = columns.HasFlag(OptionalColumns.Extension) ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    /// <summary>Right-click on the column header: toggle the optional columns.</summary>
-    private void Header_RightTapped(object sender, RightTappedRoutedEventArgs e)
-    {
-        var shown = ListColumns.Parse(Settings.Files.Columns);
-        var menu = new MenuFlyout();
-        foreach (var c in ListColumns.All)
-        {
-            var column = c;
-            var item = new ToggleMenuFlyoutItem { Text = ListColumns.Title(column), IsChecked = shown.HasFlag(column) };
-            item.Click += (_, _) =>
-            {
-                Settings.Files.Columns = ListColumns.Toggle(Settings.Files.Columns, column);
-                _host.Services.SaveSettings();
-            };
-            menu.Items.Add(item);
-        }
-
-        menu.ShowAt(Header, e.GetPosition(Header));
-        e.Handled = true;
-    }
-
-    private void Sort_Click(object sender, RoutedEventArgs e)
-    {
-        var column = Enum.Parse<SortColumn>((string)((Button)sender).Tag);
-        SetSort(column);
-    }
-
-    internal void SetSort(SortColumn column)
-    {
-        var s = Settings.Files;
-        if (s.SortBy == column) s.SortDescending = !s.SortDescending;
-        else
-        {
-            s.SortBy = column;
-            s.SortDescending = column is SortColumn.Modified or SortColumn.Size;
-        }
-
-        _host.Services.SaveSettings();
-    }
-
-    /// <summary>Called when settings change: re-present without reloading from disk.</summary>
+    /// <summary>
+    /// Called when settings change: re-present without reloading from disk. When only the column layout changed
+    /// (a column resized, moved or toggled) the rows stay and just follow the new layout.
+    /// </summary>
     internal void ApplySettings()
     {
         RenderTabs();
+        PropertyColumns.UseDateFormat(Settings.Files.DateFormat);
+        ApplyColumnSettings();
+        var applied = SettingsStore.WithoutColumns(Settings);
+        var columnsOnly = applied == _appliedSettings;
+        _appliedSettings = applied;
+        if (columnsOnly && !Tab.IsHome)
+        {
+            // A property column sorts by values that may still be missing.
+            LoadSortProperties(Tab);
+            return;
+        }
+
         if (!Tab.IsHome)
         {
             RememberSelection();
             Present(Tab);
             // Trusted Folders or the git-status switch may have changed: ask the git gate again.
-            if (_loadCts is { IsCancellationRequested: false } cts) _ = LoadGitStatusAsync(Tab, cts.Token);
+            if (Tab.Access.IsFileSystem && _loadCts is { IsCancellationRequested: false } cts) _ = LoadGitStatusAsync(Tab, cts.Token);
         }
         else
         {
@@ -940,35 +927,6 @@ public sealed partial class PaneView : UserControl
 
     // ---------------- breadcrumb / path box ----------------
 
-    private void RenderCrumbs()
-    {
-        Crumbs.Children.Clear();
-        PathBox.Visibility = Visibility.Collapsed;
-        CrumbHost.Visibility = Visibility.Visible;
-        if (Tab.IsHome)
-        {
-            Crumbs.Children.Add(Crumb("⌂ home", WinPath.Home));
-            return;
-        }
-
-        if (Tab.IsRecycleBin)
-        {
-            Crumbs.Children.Add(Crumb("♻ Recycle Bin", WinPath.RecycleBin));
-            return;
-        }
-
-        var segments = WinPath.Segments(Tab.Location);
-        for (var i = 0; i < segments.Count; i++)
-        {
-            if (i > 0) Crumbs.Children.Add(new TextBlock { Text = "›", Foreground = Res("PolluxMutedBrush"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(1, 0, 1, 0) });
-            var label = i == 0 ? segments[0].TrimEnd('\\') : WinPath.Name(segments[i]);
-            Crumbs.Children.Add(Crumb(label, segments[i]));
-        }
-
-        CrumbScroll.UpdateLayout();
-        CrumbScroll.ChangeView(CrumbScroll.ScrollableWidth, null, null, true);
-    }
-
     private Button Crumb(string label, string target)
     {
         var b = new Button
@@ -979,7 +937,9 @@ public sealed partial class PaneView : UserControl
             Padding = new Thickness(5, 2, 5, 2),
             Style = Ui.FlatButton,
             IsTabStop = false,
+            Tag = target,
         };
+        if (Locations.Classify(target) == LocationKind.Folder) AcceptFileDrops(b, target);
         b.Click += (_, _) =>
         {
             _host.OnPaneActivated(this);
@@ -991,60 +951,6 @@ public sealed partial class PaneView : UserControl
     private void CrumbHost_Tapped(object sender, TappedRoutedEventArgs e)
     {
         if (e.OriginalSource is FrameworkElement fe && (fe == CrumbHost || fe == Crumbs || fe is ScrollViewer || fe.Parent == CrumbScroll)) EditPath();
-    }
-
-    internal void EditPath()
-    {
-        _host.OnPaneActivated(this);
-        CrumbHost.Visibility = Visibility.Collapsed;
-        PathBox.Visibility = Visibility.Visible;
-        PathBox.Text = Tab.Folder ?? "";
-        PathBox.Focus(FocusState.Keyboard);
-        PathBox.SelectAll();
-    }
-
-    private void PathBox_KeyDown(object sender, KeyRoutedEventArgs e)
-    {
-        if (e.Key == VirtualKey.Enter)
-        {
-            e.Handled = true;
-            var text = PathBox.Text.Trim();
-            if (text.Length == 0) { RenderCrumbs(); FocusList(); return; }
-            if (WinPath.WellKnown(text) is { } known)
-            {
-                Navigate(known);
-                FocusList();
-                return;
-            }
-
-            var target = WinPath.Resolve(text, Folder ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), Environment.GetEnvironmentVariable);
-            if (Directory.Exists(target) || File.Exists(target))
-            {
-                Navigate(target);
-                FocusList();
-            }
-            else
-            {
-                PathBox.Header = null;
-                PathBox.Foreground = Res("PolluxBadBrush");
-                ToolTipService.SetToolTip(PathBox, "Path not found: " + target);
-            }
-        }
-        else if (e.Key == VirtualKey.Escape)
-        {
-            e.Handled = true;
-            RenderCrumbs();
-            FocusList();
-        }
-        else
-        {
-            PathBox.ClearValue(ForegroundProperty);
-        }
-    }
-
-    private void PathBox_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (PathBox.Visibility == Visibility.Visible) RenderCrumbs();
     }
 
     // ---------------- filter ----------------
@@ -1115,21 +1021,6 @@ public sealed partial class PaneView : UserControl
         if ((e.OriginalSource as FrameworkElement)?.DataContext is FileItem item) Open(item);
     }
 
-    internal void OpenSelected()
-    {
-        if (Tab.IsRecycleBin) return; // recycled entries are only restored or deleted, never opened
-        var sel = SelectedItems;
-        if (sel.Count == 1) Open(sel[0]);
-        else foreach (var f in sel.Where(i => !i.IsDirectory)) Shell.Open(f.Path);
-    }
-
-    private void Open(FileItem item)
-    {
-        if (Tab.IsRecycleBin) return;
-        if (item.IsDirectory) Navigate(item.Path);
-        else Shell.Open(item.Path);
-    }
-
     internal void SelectAll() => List.SelectAll();
 
     internal void SelectNone() => List.SelectedItems.Clear();
@@ -1176,12 +1067,15 @@ public sealed partial class PaneView : UserControl
     private void List_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
     {
         if (args.InRecycleQueue || args.Item is not FileItem item) return;
-        if (args.ItemContainer.ContentTemplateRoot is not Grid root) return;
+        if (args.ItemContainer.ContentTemplateRoot is not Panel root) return;
+        ShowIcon(args.ItemContainer, item);
         if (_shownMode != ViewMode.Details)
         {
-            ShowThumbnail(args.ItemContainer, root, item);
+            if (root is Grid grid) ShowThumbnail(args.ItemContainer, grid, item);
             return;
         }
+
+        RequestProperties(item);
 
         if (root.Children[0] is not StackPanel sp || sp.Children[1] is not TextBlock name) return;
         name.TextHighlighters.Clear();
@@ -1212,73 +1106,11 @@ public sealed partial class PaneView : UserControl
             return;
         }
 
-        var menu = Tab.IsRecycleBin ? ContextMenus.ForRecycleBin(_host, SelectedItems) : ContextMenus.ForSelection(_host, SelectedItems, Folder, HasSearchResults);
+        var menu = Tab.IsRecycleBin ? ContextMenus.ForRecycleBin(_host, SelectedItems)
+            : Tab.Access.CanModify ? ContextMenus.ForSelection(_host, SelectedItems, Folder, HasSearchResults)
+            : ContextMenus.ForReadOnly(_host, SelectedItems, Tab.Kind);
         menu.ShowAt(List, e.GetPosition(List));
         e.Handled = true;
-    }
-
-    // ---------------- drag & drop ----------------
-
-    private void List_DragItemsStarting(object sender, DragItemsStartingEventArgs e)
-    {
-        var paths = e.Items.OfType<FileItem>().Select(i => i.Path).ToList();
-        CrashLog.Trace($"drag start pane {Index}: {paths.Count} items");
-        // Recycled entries leave the bin only through Restore.
-        if (paths.Count == 0 || Tab.IsRecycleBin) { e.Cancel = true; return; }
-        e.Data.RequestedOperation = DataPackageOperation.Copy | DataPackageOperation.Move;
-        e.Data.Properties.Add("PolluxSourceFolder", Folder ?? "");
-        e.Data.SetDataProvider(StandardDataFormats.StorageItems, async request =>
-        {
-            var deferral = request.GetDeferral();
-            try { request.SetData(await StorageItemsFor(paths)); }
-            finally { deferral.Complete(); }
-        });
-    }
-
-    internal static async Task<List<IStorageItem>> StorageItemsFor(IEnumerable<string> paths)
-    {
-        var list = new List<IStorageItem>();
-        foreach (var p in paths)
-        {
-            try
-            {
-                list.Add(Directory.Exists(p) ? await StorageFolder.GetFolderFromPathAsync(p) : await StorageFile.GetFileFromPathAsync(p));
-            }
-            catch (Exception ex) when (ex is FileNotFoundException or UnauthorizedAccessException or ArgumentException)
-            {
-                // Skip items that vanished or are not accessible.
-            }
-        }
-
-        return list;
-    }
-
-    private void List_DragOver(object sender, DragEventArgs e)
-    {
-        CrashLog.Trace($"drag over pane {Index}: storage={e.DataView.Contains(StandardDataFormats.StorageItems)}");
-        if (Folder is null || !e.DataView.Contains(StandardDataFormats.StorageItems)) return;
-        var sameFolder = e.DataView.Properties.TryGetValue("PolluxSourceFolder", out var src) && string.Equals(src as string, Folder, StringComparison.OrdinalIgnoreCase);
-        if (sameFolder) { e.AcceptedOperation = DataPackageOperation.None; return; }
-        var move = e.Modifiers.HasFlag(Windows.ApplicationModel.DataTransfer.DragDrop.DragDropModifiers.Shift);
-        e.AcceptedOperation = move ? DataPackageOperation.Move : DataPackageOperation.Copy;
-        e.DragUIOverride.Caption = (move ? "Move to " : "Copy to ") + WinPath.Name(Folder);
-    }
-
-    private async void List_Drop(object sender, DragEventArgs e)
-    {
-        CrashLog.Trace($"drop pane {Index}: op={e.AcceptedOperation}");
-        if (Folder is null || !e.DataView.Contains(StandardDataFormats.StorageItems)) return;
-        var deferral = e.GetDeferral();
-        try
-        {
-            var items = await e.DataView.GetStorageItemsAsync();
-            var paths = items.Select(i => i.Path).Where(p => !string.IsNullOrEmpty(p)).ToList();
-            _host.Transfer(e.AcceptedOperation == DataPackageOperation.Move, paths, Folder);
-        }
-        finally
-        {
-            deferral.Complete();
-        }
     }
 
     // ---------------- home ----------------

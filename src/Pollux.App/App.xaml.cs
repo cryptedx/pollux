@@ -151,11 +151,14 @@ public partial class App : Application
         Services.SettingsChanged += ApplyAppSettings;
         Search = new SearchService(Services);
         Search.Rebuild();
+        _ = Services.ShellNew.EntriesAsync();
         _indexTimer = Dispatcher.CreateTimer();
         _indexTimer.Interval = TimeSpan.FromMinutes(30);
         _indexTimer.Tick += (_, _) => Search.Rebuild();
         _indexTimer.Start();
         ApplyAppSettings();
+        // Files opened from zips by earlier sessions that did not get to clean up.
+        _ = Task.Run(() => VirtualLocations.CleanUpTemp(exiting: false));
         StartupLog.Mark("background");
         StartupLog.Flush(_args.Contains("--background") ? "background-start" : "cold-start");
     }
@@ -412,6 +415,7 @@ public partial class App : Application
         Services.Session.Windows = _windows.Where(x => !x.IsHidden || x == w).Select(x => x.ToSession()).ToList();
         Services.SaveSession();
         Services.SavePlaces();
+        Services.SaveFolderViews();
     }
 
     internal void Quit()
@@ -452,6 +456,8 @@ public partial class App : Application
         _tray?.Dispose();
         _tray = null;
         Search?.Dispose();
+        VirtualLocations.CleanUpTemp(exiting: true);
+        Services.SaveFolderViews();
     }
 
     internal void ShowSettings()

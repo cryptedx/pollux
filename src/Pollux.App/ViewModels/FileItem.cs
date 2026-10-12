@@ -5,7 +5,7 @@ namespace Pollux.App.ViewModels;
 
 /// <summary>
 /// One row in a file list; rebuilt when the folder reloads. Only what changes while a listing stays (a folder's computed
-/// size, the compare mark) is observable, so the list can update those rows in place instead of being rebuilt.
+/// size, the compare mark, shell property values) is observable, so the list can update those rows in place instead of being rebuilt.
 /// </summary>
 public sealed partial class FileItem : System.ComponentModel.INotifyPropertyChanged
 {
@@ -22,23 +22,21 @@ public sealed partial class FileItem : System.ComponentModel.INotifyPropertyChan
     }
 
     /// <param name="displayName">Shown instead of the name, e.g. a Folder Search result's path relative to the search root.</param>
-    public FileItem(FileEntry entry, string dateFormat, bool showExtension, OptionalColumns columns = OptionalColumns.None, string? displayName = null, bool folderSizeKnown = false)
+    public FileItem(FileEntry entry, string dateFormat, bool showExtension, string? displayName = null, bool folderSizeKnown = false)
     {
         Entry = entry;
         Name = displayName ?? (showExtension || entry.IsDirectory || entry.Extension.Length == 0
             ? entry.Name
             : entry.Name[..^(entry.Extension.Length + 1)]);
-        ModifiedText = entry.Modified.ToString(dateFormat, System.Globalization.CultureInfo.InvariantCulture);
+        // Shares and many shell items have no date.
+        ModifiedText = entry.Modified == default ? "" : entry.Modified.ToString(dateFormat, System.Globalization.CultureInfo.InvariantCulture);
         TypeText = Format.TypeLabel(entry);
         _folderSizeKnown = folderSizeKnown;
-        _sizeText = entry.IsDirectory && !folderSizeKnown ? "" : Format.Size(entry.Size);
+        _sizeText = (entry.IsDirectory && !folderSizeKnown) || (entry.Size == 0 && Core.Navigation.Locations.IsShell(entry.FullPath)) ? "" : Format.Size(entry.Size);
         Badge = Format.Badge(entry);
         CreatedText = entry.Created == default ? "" : entry.Created.ToString(dateFormat, System.Globalization.CultureInfo.InvariantCulture);
         AttributesText = Format.AttributeLetters(entry.Attributes);
         ExtensionText = entry.Extension;
-        CreatedVisibility = columns.HasFlag(OptionalColumns.Created) ? Visibility.Visible : Visibility.Collapsed;
-        AttributesVisibility = columns.HasFlag(OptionalColumns.Attributes) ? Visibility.Visible : Visibility.Collapsed;
-        ExtensionVisibility = columns.HasFlag(OptionalColumns.Extension) ? Visibility.Visible : Visibility.Collapsed;
         CloudGlyph = entry.Cloud switch { CloudState.CloudOnly => "☁", CloudState.AlwaysLocal => "●", CloudState.Local => "○", _ => "" };
         OriginText = entry.OriginalLocation is { Length: > 0 } origin ? "from " + origin : "";
     }
@@ -63,9 +61,21 @@ public sealed partial class FileItem : System.ComponentModel.INotifyPropertyChan
     public string CreatedText { get; }
     public string AttributesText { get; }
     public string ExtensionText { get; }
-    public Visibility CreatedVisibility { get; }
-    public Visibility AttributesVisibility { get; }
-    public Visibility ExtensionVisibility { get; }
+
+    // Shell property columns: read from the shared store on every binding, so a row shows what is loaded so far.
+    public string DimensionsText => PropertyText(ShellProperty.Dimensions);
+    public string DurationText => PropertyText(ShellProperty.Duration);
+    public string AuthorsText => PropertyText(ShellProperty.Authors);
+    public string TitleText => PropertyText(ShellProperty.Title);
+    public string FileVersionText => PropertyText(ShellProperty.FileVersion);
+    public string CompanyText => PropertyText(ShellProperty.Company);
+    public string DateTakenText => PropertyText(ShellProperty.DateTaken);
+
+    private string PropertyText(ShellProperty property) => Entry.IsDirectory ? "" : Services.PropertyColumns.Values.Get(Entry, property)?.Text ?? "";
+
+    /// <summary>The property values of this file were read: its property cells show them.</summary>
+    public void RefreshProperties() =>
+        Raise(nameof(DimensionsText), nameof(DurationText), nameof(AuthorsText), nameof(TitleText), nameof(FileVersionText), nameof(CompanyText), nameof(DateTakenText));
     public string CloudGlyph { get; }
 
     /// <summary>Where a Recycle Bin entry was deleted from ("from C:\Users\…"); empty for every other entry.</summary>
@@ -76,6 +86,21 @@ public sealed partial class FileItem : System.ComponentModel.INotifyPropertyChan
     public string Path => Entry.FullPath;
     public bool IsDirectory => Entry.IsDirectory;
     public Visibility FolderVisibility => Entry.IsDirectory ? Visibility.Visible : Visibility.Collapsed;
+    private Microsoft.UI.Xaml.Media.ImageSource? _icon;
+
+    /// <summary>The shell icon once it is loaded; until then the folder/badge drawing shows.</summary>
+    public Microsoft.UI.Xaml.Media.ImageSource? Icon
+    {
+        get => _icon;
+        set
+        {
+            if (ReferenceEquals(_icon, value)) return;
+            _icon = value;
+            Raise(nameof(Icon), nameof(IconFallbackVisibility));
+        }
+    }
+
+    public Visibility IconFallbackVisibility => _icon is null ? Visibility.Visible : Visibility.Collapsed;
     public Visibility BadgeVisibility => Entry.IsDirectory ? Visibility.Collapsed : Visibility.Visible;
     public double NameOpacity => Entry.IsHidden || Git == Core.Git.GitMark.Ignored ? 0.5 : 1.0;
     private string? _linkTip;

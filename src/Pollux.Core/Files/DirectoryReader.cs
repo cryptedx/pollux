@@ -14,18 +14,29 @@ public static class DirectoryReader
         ReturnSpecialDirectories = false,
     };
 
-    public static async IAsyncEnumerable<IReadOnlyList<FileEntry>> ReadAsync(
+    public static IAsyncEnumerable<IReadOnlyList<FileEntry>> ReadAsync(
         string directory,
         int batchSize = 500,
+        CancellationToken cancellationToken = default) =>
+        Stream(() => Enumerate(directory), batchSize, staThread: false, cancellationToken);
+
+    /// <summary>
+    /// Streams any blocking listing in growing batches, enumerated on a worker thread: the thread pool, or a thread of
+    /// its own in a single-threaded apartment for shell namespace folders (<paramref name="staThread"/>).
+    /// </summary>
+    public static async IAsyncEnumerable<IReadOnlyList<FileEntry>> Stream(
+        Func<IEnumerable<FileEntry>> source,
+        int batchSize = 500,
+        bool staThread = false,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var channel = System.Threading.Channels.Channel.CreateBounded<IReadOnlyList<FileEntry>>(4);
-        var producer = Task.Run(() =>
+        void Produce()
         {
             try
             {
                 var batch = new List<FileEntry>(batchSize);
-                foreach (var e in Enumerate(directory))
+                foreach (var e in source())
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     batch.Add(e);
@@ -49,7 +60,9 @@ public static class DirectoryReader
             {
                 channel.Writer.Complete(ex);
             }
-        }, cancellationToken);
+        }
+
+        var producer = staThread ? StaThread.Run(() => { Produce(); return true; }, "Pollux listing worker") : Task.Run(Produce, cancellationToken);
 
         await foreach (var batch in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {

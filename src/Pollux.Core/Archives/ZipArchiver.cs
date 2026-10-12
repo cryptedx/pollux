@@ -139,7 +139,7 @@ public static class ZipArchiver
 
     /// <summary>
     /// Copies selected entries (files or whole folders, by their path inside the archive) out of the archive.
-    /// Each selection lands directly in the target, keeping its own name. Not shipped yet: the app has no zip browsing to pick entries from.
+    /// Each selection lands directly in the target, keeping its own name. Used to copy entries out of a zip folder (<see cref="ZipFolder.CopyOut"/>).
     /// </summary>
     public static ExtractResult ExtractSelection(string zipPath, IReadOnlyList<string> innerPaths, string targetDirectory, IProgress<ZipProgress>? progress = null,
         Func<ExtractLimitBreach, bool>? confirm = null, ExtractLimits? limits = null, CancellationToken ct = default)

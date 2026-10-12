@@ -16,6 +16,20 @@ internal interface IPaneHost
     void MoveTab(int fromPane, int fromIndex, int toPane, int toIndex);
     void Transfer(bool move, IReadOnlyList<string> sources, string targetDirectory);
 
+    /// <summary>Creates a .lnk shortcut to each source in the target folder, named like Explorer does.</summary>
+    void CreateShortcuts(IReadOnlyList<string> sources, string targetDirectory);
+
+    /// <summary>Copies items of a zip or shell folder into a folder: extracting, or the shell's copy with its own progress.</summary>
+    void CopyOut(IReadOnlyList<string> sources, string targetDirectory);
+
+    /// <summary>Worker thread: asks whether to extract an archive that breaks the zip bomb limits, and waits for the answer.</summary>
+    bool ConfirmExtractLimit(Pollux.Core.Archives.ExtractLimitBreach breach);
+
+    /// <summary>Creates a file from a "New" template in the active pane's folder and offers to rename it.</summary>
+    void NewFromTemplate(Pollux.Core.ShellNew.ShellNewEntry entry);
+
+    void ShowToast(string text, int seconds = 3);
+
     /// <summary>Brings the window to the front (Window.Activate).</summary>
     void Activate();
 }

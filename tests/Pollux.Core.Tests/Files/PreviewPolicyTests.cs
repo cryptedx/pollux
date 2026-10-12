@@ -22,6 +22,45 @@ public sealed class PreviewPolicyTests
     public void ModeDependsOnTheExtension(string extension, PreviewMode expected) =>
         Assert.AreEqual(expected, PreviewPolicy.ModeFor(extension));
 
+    [TestMethod]
+    [DataRow("docx", true)]
+    [DataRow("XLSX", true)]
+    [DataRow("pptx", true)]
+    [DataRow("msg", true)]
+    [DataRow("eml", true)]
+    [DataRow("vsdx", true)]
+    [DataRow("ttf", true)]
+    [DataRow("otf", true)]
+    [DataRow("unknownext", true)]
+    [DataRow("png", false)]
+    [DataRow("pdf", false)]
+    [DataRow("html", false)]
+    [DataRow("svg", false)]
+    [DataRow("mp4", false)]
+    [DataRow("txt", false)]
+    [DataRow("md", false)]
+    [DataRow("cs", false)]
+    [DataRow("JSON", false)]
+    [DataRow("xml", false)]
+    [DataRow("ps1", false)]
+    [DataRow("", false)]
+    public void OwnViewersWinOverShellHandlersForTheirTypes(string extension, bool expected) =>
+        Assert.AreEqual(expected, PreviewPolicy.PrefersShellHandler(extension));
+
+    [TestMethod]
+    [DataRow(null, true)]
+    [DataRow("[ZoneTransfer]\r\nZoneId=0\r\n", true)]
+    [DataRow("[ZoneTransfer]\r\nZoneId=1", true)]
+    [DataRow("[ZoneTransfer]\nZoneId=2\nHostUrl=file://server/x", true)]
+    [DataRow("[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://example.com/\r\nHostUrl=https://example.com/a.docx\r\n", false)]
+    [DataRow("[ZoneTransfer]\r\nzoneid = 4\r\n", false)]
+    [DataRow("[ZoneTransfer]\r\nZoneId=x\r\n", false)]
+    [DataRow("[ZoneTransfer]\r\nZoneId\r\n", false)]
+    [DataRow("garbage", false)]
+    [DataRow("", false)]
+    public void DownloadedFilesNeverGoToShellHandlers(string? zoneIdentifier, bool expected) =>
+        Assert.AreEqual(expected, PreviewPolicy.AllowsShellHandler(zoneIdentifier));
+
     private const string FileUrl = "https://pollux.preview/evil.html";
 
     private static Dictionary<string, string> Directives(string csp) =>

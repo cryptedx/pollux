@@ -13,11 +13,30 @@ public static class WinPath
     /// <summary>The Windows Recycle Bin, shown read-only in a Tab (it spans all drives, so it is no folder).</summary>
     public const string RecycleBin = "pollux:recycle-bin";
 
-    /// <summary>The location a typed name stands for ("home", "recycle bin", "shell:RecycleBinFolder"), or null for anything else.</summary>
+    /// <summary>This PC: drives, phones and cameras (a shell namespace folder, see <see cref="Locations"/>).</summary>
+    public const string ThisPc = "pollux:this-pc";
+
+    /// <summary>The computers Windows discovered on the network; only listed when the user goes there (ADR 0010).</summary>
+    public const string Network = "pollux:network";
+
+    /// <summary>Control Panel, by its shell parsing name.</summary>
+    public const string ControlPanel = "::{26EE0668-A00A-44D7-9371-BEB064C98683}";
+
+    /// <summary>The Libraries folder, by its shell moniker.</summary>
+    public const string Libraries = "shell:Libraries";
+
+    /// <summary>
+    /// The location a typed name stands for ("home", "recycle bin", "this pc", "network", "control panel", "libraries" and
+    /// their shell: monikers), or null for anything else.
+    /// </summary>
     public static string? WellKnown(string text) => text.Trim().ToLowerInvariant() switch
     {
         "home" or Home => Home,
         "recycle bin" or "recyclebin" or "shell:recyclebinfolder" or RecycleBin => RecycleBin,
+        "this pc" or "thispc" or "computer" or "my computer" or "shell:mycomputerfolder" or ThisPc => ThisPc,
+        "network" or "shell:networkplacesfolder" or Network => Network,
+        "control panel" or "controlpanel" or "shell:controlpanelfolder" or "::{26ee0668-a00a-44d7-9371-beb064c98683}" => ControlPanel,
+        "libraries" or "shell:libraries" => Libraries,
         _ => null,
     };
 

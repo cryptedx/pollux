@@ -34,6 +34,15 @@ public sealed class CommandRegistryTests
     }
 
     [TestMethod]
+    public void CtrlEnterOpensExternallyExceptInSearchResults()
+    {
+        var keys = CommandRegistry.Keybindings(new CopilotSettings(), []);
+
+        Assert.AreEqual("file.openExternal", keys.Resolve(KeyChord.Parse("ctrl+enter"), Context.Of("listFocused")));
+        Assert.AreEqual("search.revealInFolder", keys.Resolve(KeyChord.Parse("ctrl+enter"), Context.Of("listFocused", "searchActive")));
+    }
+
+    [TestMethod]
     public void SelectionCommandsAreBoundToTheirDefaults()
     {
         var keys = CommandRegistry.Keybindings(new CopilotSettings(), []);

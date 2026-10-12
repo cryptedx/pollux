@@ -3,7 +3,7 @@ namespace Pollux.Core.Archives;
 /// <summary>
 /// Paths that point into a .zip archive as if it were a folder ("C:\data\a.zip\docs\b.txt").
 /// Implemented without System.IO.Path so it behaves the same on every OS the tests run on.
-/// Not shipped yet: the app has no zip browsing (Enter on a .zip does not open it), so only the tests use this.
+/// Zip browsing itself parses locations with <see cref="ZipFolder.TryParse"/>, which keeps the separators as written.
 /// </summary>
 public static class ZipPath
 {

@@ -37,6 +37,10 @@ internal static class HomeView
         }
 
         panel.Children.Add(Heading("Drives"));
+        // A static link: Home never lists This PC, and never shows Network or servers (ADR 0010).
+        var places = Grid();
+        AddTile(places, "This PC", "drives, phones and cameras", "", () => pane.Navigate(WinPath.ThisPc), folder: false, glyph: "🖥");
+        panel.Children.Add(places);
         foreach (var d in Drives.Current)
         {
             var root = d.Root;
@@ -72,9 +76,11 @@ internal static class HomeView
         ItemHeight = 58,
     };
 
-    private static void AddTile(VariableSizedWrapGrid grid, string title, string path, string hint, Action onClick, bool folder)
+    private static void AddTile(VariableSizedWrapGrid grid, string title, string path, string hint, Action onClick, bool folder, string? glyph = null)
     {
-        var icon = folder
+        var icon = glyph is not null
+            ? new TextBlock { Text = glyph, VerticalAlignment = VerticalAlignment.Center }
+            : folder
             ? (FrameworkElement)new Border { Width = 18, Height = 13, CornerRadius = new CornerRadius(2, 4, 3, 3), Background = Theme.Brush("PolluxFolderBrush"), VerticalAlignment = VerticalAlignment.Center }
             : new TextBlock { Text = "▤", VerticalAlignment = VerticalAlignment.Center };
         var text = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };

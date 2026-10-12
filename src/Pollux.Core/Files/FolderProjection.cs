@@ -22,7 +22,9 @@ public static class FolderProjection
     /// <summary>
     /// Hides in-flight Transfer files and hidden/system entries (per settings), sorts, applies the Filter and adds git marks.
     /// Selects the entry named <paramref name="focusName"/> if given, else the entries named in <paramref name="selectedNames"/>
-    /// (case-insensitive), else the first row. <paramref name="folderSizes"/> (full path to bytes) gives folders their computed size.
+    /// (case-insensitive), else the first row. <paramref name="folderSizes"/> (full path to bytes) gives folders their computed size;
+    /// <paramref name="properties"/> holds the values a shell property sort column sorts by; <paramref name="view"/> (a folder's
+    /// remembered view) replaces the sort and grouping settings.
     /// </summary>
     public static FolderListing Project(
         IEnumerable<FileEntry> entries,
@@ -33,10 +35,12 @@ public static class FolderProjection
         IReadOnlyList<string> selectedNames,
         string? focusName,
         DateTime? now = null,
-        IReadOnlyDictionary<string, long>? folderSizes = null)
+        IReadOnlyDictionary<string, long>? folderSizes = null,
+        PropertyValues? properties = null,
+        ResolvedFolderView? view = null)
     {
         var s = settings.Files;
-        var comparer = new EntryComparer(s.SortBy, s.SortDescending, s.FoldersFirst);
+        var comparer = new EntryComparer(KnownColumns.For(view?.SortBy ?? s.SortBy), view?.SortDescending ?? s.SortDescending, s.FoldersFirst, properties);
         var query = filter ?? "";
         var gitHere = git is not null && WinPath.IsSameOrUnder(folder, git.Root) ? git : null;
         var relative = gitHere is null ? "" : RepoRelative(folder, gitHere.Root);
@@ -57,7 +61,7 @@ public static class FolderProjection
             rows.Add(new FolderRow(e, m.Ranges, mark));
         }
 
-        var (grouped, groups) = EntryGrouping.Apply(rows, s.GroupBy, now ?? DateTime.Now);
+        var (grouped, groups) = EntryGrouping.Apply(rows, view?.GroupBy ?? s.GroupBy, now ?? DateTime.Now);
         rows = grouped;
 
         IReadOnlyList<string> names = focusName is { } f ? [f] : selectedNames;

@@ -14,6 +14,7 @@ internal sealed class AppServices
     private readonly List<FileSystemWatcher> _watchers = [];
     private DispatcherQueueTimer? _reloadDebounce;
     private DispatcherQueueTimer? _saveDebounce;
+    private readonly Task<Core.Files.FolderViews> _folderViews;
 
     public AppServices(DispatcherQueue dispatcher)
     {
@@ -36,6 +37,8 @@ internal sealed class AppServices
         Recent = JsonFile.Load(RecentFile, StateJson.Default.RecentList);
         Session = JsonFile.Load(SessionFile, StateJson.Default.SessionState);
         Workspaces = new Core.Workspaces.WorkspaceStore(Path.Combine(Paths.ConfigDirectory, "workspaces"));
+        var folderViewsFile = Paths.FolderViewsFile;
+        _folderViews = Task.Run(() => new Core.Files.FolderViews(folderViewsFile));
         SeedTrustedFolders();
     }
 
@@ -79,6 +82,26 @@ internal sealed class AppServices
     public RecentList Recent { get; }
     public SessionState Session { get; }
     public Core.Workspaces.WorkspaceStore Workspaces { get; }
+    public ShellNewService ShellNew { get; } = new();
+
+    /// <summary>The views folders remember (folder-views.json); read in the background at start, saved debounced.</summary>
+    public Core.Files.FolderViews FolderViews => _folderViews.Result;
+
+    /// <summary>Raised on the UI thread after a folder's remembered view changed; Panes show the location again if their view changed.</summary>
+    public event Action? FolderViewsChanged;
+
+    /// <summary>Changes the remembered views and lets every Pane follow.</summary>
+    public void ChangeFolderViews(Action<Core.Files.FolderViews> change)
+    {
+        change(FolderViews);
+        FolderViewsChanged?.Invoke();
+    }
+
+    /// <summary>Writes pending folder views now (window closed, exit).</summary>
+    public void SaveFolderViews()
+    {
+        if (_folderViews.IsCompletedSuccessfully) _folderViews.Result.Flush();
+    }
 
     /// <summary>Raised on the UI thread after settings.json or keybindings.json changed.</summary>
     public event Action? SettingsChanged;
