@@ -1,7 +1,9 @@
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Pollux.App.Interop;
 using Pollux.App.Services;
 using Pollux.App.ViewModels;
 using Pollux.Core.Navigation;
@@ -24,6 +26,9 @@ public sealed partial class PaneView
     private IReadOnlyList<string> _dragSources = [];
     private DropKeys _dragKeys;
     private ListViewItem? _dropRow;
+    private DispatcherQueueTimer? _dragKeyTimer;
+    private DropKeys _polledKeys;
+    private Native.POINT? _nudgedFrom;
 
     private void List_DragItemsStarting(object sender, DragItemsStartingEventArgs e)
     {
@@ -101,11 +106,16 @@ public sealed partial class PaneView
         AcceptDrop(e, target);
     }
 
-    private void List_DragLeave(object sender, DragEventArgs e) => HighlightDropRow(null);
+    private void List_DragLeave(object sender, DragEventArgs e)
+    {
+        HighlightDropRow(null);
+        StopDragKeyWatch();
+    }
 
     private void List_Drop(object sender, DragEventArgs e)
     {
         HighlightDropRow(null);
+        StopDragKeyWatch();
         var (_, target) = ListDropTarget(sender, e.OriginalSource);
         DropOn(e, target, sender as UIElement);
     }
@@ -154,8 +164,10 @@ public sealed partial class PaneView
             AcceptDrop(e, target);
             e.Handled = true;
         };
+        element.DragLeave += (_, _) => StopDragKeyWatch();
         element.Drop += (_, e) =>
         {
+            StopDragKeyWatch();
             if (_draggedTab is not null || !e.DataView.Contains(StandardDataFormats.StorageItems)) return;
             e.Handled = true;
             DropOn(e, target, element);
@@ -166,6 +178,7 @@ public sealed partial class PaneView
     private void AcceptDrop(DragEventArgs e, string? target)
     {
         _dragKeys = Keys(e.Modifiers);
+        StartDragKeyWatch();
         if (target is null)
         {
             e.AcceptedOperation = DataPackageOperation.None;
@@ -290,6 +303,58 @@ public sealed partial class PaneView
         | (m.HasFlag(DragDropModifiers.Control) ? DropKeys.Control : 0)
         | (m.HasFlag(DragDropModifiers.Alt) ? DropKeys.Alt : 0)
         | (m.HasFlag(DragDropModifiers.RightButton) ? DropKeys.RightButton : 0);
+
+    // ---------------- modifier keys while the pointer rests ----------------
+
+    // WinUI raises DragOver only when the pointer moves, so Shift, Ctrl or Alt pressed over a target would not change the
+    // operation and caption until the next move. While a drag is over this Pane the keys are polled; when they change,
+    // the cursor is nudged by a pixel and put back, and each step raises DragOver with the new keys.
+
+    private void StartDragKeyWatch()
+    {
+        if (_dragKeyTimer is null)
+        {
+            _dragKeyTimer = DispatcherQueue.CreateTimer();
+            _dragKeyTimer.Interval = TimeSpan.FromMilliseconds(30);
+            _dragKeyTimer.Tick += (_, _) => DragKeyTick();
+        }
+
+        if (_dragKeyTimer.IsRunning) return;
+        _polledKeys = _dragKeys & ~DropKeys.RightButton;
+        _dragKeyTimer.Start();
+    }
+
+    private void StopDragKeyWatch()
+    {
+        _dragKeyTimer?.Stop();
+        if (_nudgedFrom is { } home) Native.SetCursorPos(home.X, home.Y);
+        _nudgedFrom = null;
+    }
+
+    private void DragKeyTick()
+    {
+        // The drag ended without a Drop or DragLeave here (dropped elsewhere, cancelled with Esc).
+        if (!IsDown(VK_LBUTTON) && !IsDown(VK_RBUTTON)) { StopDragKeyWatch(); return; }
+        if (_nudgedFrom is { } home)
+        {
+            Native.SetCursorPos(home.X, home.Y);
+            _nudgedFrom = null;
+            return;
+        }
+
+        var keys = (IsDown(VK_SHIFT) ? DropKeys.Shift : 0) | (IsDown(VK_CONTROL) ? DropKeys.Control : 0) | (IsDown(VK_MENU) ? DropKeys.Alt : 0);
+        if (keys == _polledKeys) return;
+        _polledKeys = keys;
+        if (keys == (_dragKeys & ~DropKeys.RightButton) || !Native.GetCursorPos(out var at)) return;
+        Native.SetCursorPos(at.X + 1, at.Y);
+        // At the right edge of the screen the cursor cannot move right.
+        if (Native.GetCursorPos(out var moved) && moved.X == at.X) Native.SetCursorPos(at.X - 1, at.Y);
+        _nudgedFrom = at;
+    }
+
+    private const int VK_LBUTTON = 0x01, VK_RBUTTON = 0x02, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12;
+
+    private static bool IsDown(int vk) => Native.GetAsyncKeyState(vk) < 0;
 
     // ---------------- middle-click ----------------
 

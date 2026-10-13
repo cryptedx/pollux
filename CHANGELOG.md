@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.1 — 2026-10-13
+
+### Fixed
+
+- While dragging files, pressing or releasing `Shift`, `Ctrl` or `Alt` now changes the drop caption (copy, move, shortcut) and the operation right away, without moving the mouse.
+
 ## 1.6.0 — 2026-10-12
 
 ### Added
