@@ -134,6 +134,20 @@ _Avoid_: Pin, favorite, snippet
 The popup opened from anywhere to search the Clipboard History and paste a Clip.
 _Avoid_: Clipboard flyout, Win+V menu
 
+## Snap
+
+**Snap**:
+A screenshot Pollux took: an area, a window or a whole screen, frozen at the moment of the hotkey.
+_Avoid_: Screenshot (in UI text), capture, shot, snip
+
+**Snap Board**:
+The window where a Snap is marked up, read (text, QR) and measured before it is copied or saved.
+_Avoid_: Editor, canvas, annotator
+
+**Float**:
+A Snap kept on screen in its own borderless, always-on-top window while the user works.
+_Avoid_: Pin (that word belongs to nothing in Pollux), sticky, overlay
+
 ## Privileges
 
 **Admin Instance**:

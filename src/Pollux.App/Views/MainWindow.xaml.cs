@@ -209,6 +209,9 @@ internal sealed partial class MainWindow : Window, IPaneHost
         _statsTimer.Start();
     }
 
+    /// <summary>Opens <paramref name="folder"/> in a new Tab of the active Pane.</summary>
+    public void OpenInNewTab(string folder) => Active.NewTab(folder);
+
     /// <summary>Shows a file selected in its folder.</summary>
     public void Reveal(string path)
     {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.0 — 2026-10-13
+
+### Added
+
+- **Snap**, Pollux's screenshot tool (off by default; Settings › Snap). `Win+Alt+S` freezes all monitors and opens an overlay with a magnifier showing position and colour: drag an area, click a window, `Enter` for the whole monitor, arrow keys for single pixels, `Space` moves the selection, `C` copies the colour. Snaps are copied and saved as PNG into `Pictures\Snaps` (`snap.autoSave`, `snap.folder`). Not available in the Admin Instance; nothing leaves the PC.
+- **Snap Board:** mark up a Snap with arrows, rectangles, ellipses, lines and text (`A R E L T`, colours `1`–`6`, `Shift` for straight lines and squares), crop (`C`), undo and redo; `Ctrl+C` copies, `Ctrl+S` saves over the Snap's file, `Ctrl+Shift+S` saves elsewhere, the grip in the status line drags the file out.
+- **Floats:** `F` in the Snap Board, or `snap.afterCapture` = Float, keeps a Snap on screen, always on top. Drag to move, wheel to zoom, `Ctrl`+wheel to fade, `T` to let clicks through (*Snap: Release Floats* undoes it), `Alt`+drag to drag the file out, double-click to open it in the Snap Board.
+- Commands *Snap: Area*, *Window*, *Screen*, *Repeat Last Area*, *Area After Delay* (`snap.delaySeconds`), *Open Image from Clipboard*, *Open History* and *Release Floats*; a Snap submenu in the tray menu.
+- More Snap Board tools: marker (`M`), numbered steps (`S`), blur (`B`) and pixelate (`P`), burned into the exported pixels, spotlight (`O`), a ruler that snaps to colour edges and shows the size at 100 % for scaled monitors (`U`), and a colour picker (`I`).
+- **Text in Snaps:** `X` in the Snap Board reads the text with Windows' own text recognition, on this PC only (`snap.ocrLanguage`); *Snap: Copy Text* copies the text of an area straight away. QR codes in a Snap show a chip to copy their content; links are never opened (jsQR 1.4.0, vendored).
+- **Backdrop** (`G`): frame a Snap with one of six gradients or solid colours, or a colour of your own, with padding, rounded corners and a shadow.
+- Optional takeovers: `Win+Shift+S` and the Print key start an area Snap, `Alt+Print` a window Snap (`snap.takeOverWinShiftS`, `snap.takeOverPrintKey`; nothing in Windows' settings is changed).
+- `snap.keepDays`: Snaps taken longer ago go to the Recycle Bin, checked at start and once a day; other files in the folder are never touched.
+
 ## 1.6.1 — 2026-10-13
 
 ### Fixed

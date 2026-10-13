@@ -32,10 +32,50 @@ public sealed class PolluxSettings
     public CopilotSettings Copilot { get; set; } = new();
     public ClipboardSettings Clipboard { get; set; } = new();
     public CompareSettings Compare { get; set; } = new();
+    public SnapSettings Snap { get; set; } = new();
 
-    /// <summary>Pollux keeps running after the last window closes: the tray setting is on, or the Clipboard History needs it (ADR 0003).</summary>
+    /// <summary>Pollux keeps running after the last window closes: the tray setting is on, or the Clipboard History or Snap needs it (ADR 0003).</summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool KeepsResident => App.Resident || Clipboard.Enabled;
+    public bool KeepsResident => App.Resident || Clipboard.Enabled || Snap.Enabled;
+}
+
+/// <summary>What happens with a Snap right after the area, window or screen was chosen.</summary>
+public enum SnapAfterCapture
+{
+    Board,
+    Clipboard,
+    Save,
+    // "Float" alone trips CA1720 (type name); settings.json still says "float".
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("float")]
+    AsFloat,
+}
+
+public sealed class SnapSettings
+{
+    /// <summary>Take Snaps with the global hotkey and the Snap commands. Opt-in; while on, Pollux stays resident even if App.Resident is off.</summary>
+    public bool Enabled { get; set; }
+    /// <summary>Global hotkey that starts an area Snap.</summary>
+    public string GlobalHotkey { get; set; } = "win+alt+s";
+    /// <summary>Write every Snap as a PNG into the Snaps folder.</summary>
+    public bool AutoSave { get; set; } = true;
+    /// <summary>Where Snaps are saved; empty = Pictures\Snaps.</summary>
+    public string Folder { get; set; } = "";
+    /// <summary>Board copies the Snap and opens the Snap Board; Clipboard only copies; Save only writes the file; Float keeps it on screen.</summary>
+    public SnapAfterCapture AfterCapture { get; set; } = SnapAfterCapture.Board;
+    /// <summary>Seconds "Snap: Area After Delay" waits before freezing the screen.</summary>
+    public int DelaySeconds { get; set; } = 3;
+    /// <summary>Language Snap text recognition reads, e.g. "de-DE"; empty = the first Windows profile language with OCR installed.</summary>
+    public string OcrLanguage { get; set; } = "";
+    /// <summary>Opt-in: Win+Shift+S starts an area Snap instead of Windows' snipping tool.</summary>
+    public bool TakeOverWinShiftS { get; set; }
+    /// <summary>Opt-in: the Print key starts an area Snap, Alt+Print a window Snap.</summary>
+    public bool TakeOverPrintKey { get; set; }
+    /// <summary>Snaps taken more than this many days ago go to the Recycle Bin; 0 = keep them all.</summary>
+    public int KeepDays { get; set; }
+
+    /// <summary>The Snaps folder: the configured one, or "Snaps" inside the given Pictures folder.</summary>
+    public string FolderOrDefault(string picturesFolder) =>
+        string.IsNullOrWhiteSpace(Folder) ? Path.Combine(picturesFolder, "Snaps") : Folder;
 }
 
 public sealed class ClipboardSettings

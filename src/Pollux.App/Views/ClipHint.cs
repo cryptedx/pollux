@@ -59,6 +59,13 @@ internal sealed partial class ClipHint : Window
         _timer.Start();
     }
 
+    /// <summary>Hides the hint now (before the screen is frozen for a delayed Snap).</summary>
+    public void HideHint()
+    {
+        _timer.Stop();
+        AppWindow.Hide();
+    }
+
     private void Place()
     {
         Interop.Native.GetCursorPos(out var cursor);

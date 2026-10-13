@@ -26,6 +26,7 @@ public partial class App : Application
     private SettingsWindow? _settingsWindow;
     private bool _quitting;
     private bool _clipboardAsked;
+    private bool _snapAsked;
     private WinVTakeover? _winV;
     private DispatcherQueueTimer? _indexTimer;
 
@@ -190,6 +191,9 @@ public partial class App : Application
             _tray.SettingsRequested += ShowSettings;
             _tray.UpdatesRequested += ShowUpdates;
             _tray.ClipboardPauseRequested += () => ClipboardService.SetPaused(!Services.Settings.Clipboard.Paused);
+            _tray.SnapRequested += mode => StartSnap(mode: mode, settle: true);
+            _tray.SnapHistoryRequested += () => SnapService.OpenHistory(this, null);
+            _tray.SnapReleaseRequested += SnapService.ReleaseFloats;
             _tray.QuitRequested += Quit;
         }
 
@@ -212,17 +216,33 @@ public partial class App : Application
             TryHotkey(s.Notes.GlobalHotkey, () => ShowNotes(newNote: true));
         }
 
-        // Also while not resident (Clipboard History off): the first press asks whether to turn it on.
+        // Also while not resident (Clipboard History or Snap off): the first press asks whether to turn it on.
         TryHotkey(s.Clipboard.GlobalHotkey, () => ShowClipboardStack());
+        TryHotkey(s.Snap.GlobalHotkey, () => StartSnap());
 
-        WinEHook.Apply(Dispatcher, s.App.TakeOverWinE ? () => OpenNewWindow() : null, s.Clipboard.TakeOverWinV ? () => ShowClipboardStack() : null);
+        var takeovers = (s.App.TakeOverWinE ? Takeovers.WinE : 0)
+            | (s.Clipboard.TakeOverWinV ? Takeovers.WinV : 0)
+            | (s.Snap.Enabled && s.Snap.TakeOverWinShiftS ? Takeovers.WinShiftS : 0)
+            | (s.Snap.Enabled && s.Snap.TakeOverPrintKey ? Takeovers.PrintKey : 0);
+        WinEHook.Apply(Dispatcher, takeovers, key =>
+        {
+            switch (key)
+            {
+                case TakenKey.WinE: OpenNewWindow(); break;
+                case TakenKey.WinV: ShowClipboardStack(); break;
+                case TakenKey.SnapArea: StartSnap(); break;
+                case TakenKey.SnapWindow: StartSnap(mode: SnapMode.Window); break;
+            }
+        });
         ApplyWinVTakeover(s.Clipboard.TakeOverWinV);
 
+        SnapService.ApplyRetention(this);
         ClipboardService.Apply(elevated: false);
         WireClipboardCommands(s.Clipboard.Enabled);
         if (_tray is not null)
         {
             _tray.ClipboardHistoryOn = s.Clipboard.Enabled;
+            _tray.SnapOn = s.Snap.Enabled;
             _tray.ClipboardPaused = s.Clipboard.Paused;
         }
 
@@ -276,6 +296,50 @@ public partial class App : Application
         Services.SaveSettings();
         // Finish what the hotkey or --clipboard asked for.
         OpenClipboardStack();
+    }
+
+    /// <summary>
+    /// Takes or opens a Snap the way <paramref name="mode"/> says; while Snap is off, asks once per run whether to turn it on (afterwards <paramref name="window"/>,
+    /// when given, shows "Snap is off"). From the command palette or the tray menu (<paramref name="settle"/>) it waits a
+    /// moment so the palette or menu is gone from the screen.
+    /// The Admin Instance has no Snap.
+    /// </summary>
+    internal void StartSnap(MainWindow? window = null, SnapMode mode = SnapMode.Area, bool settle = false)
+    {
+        if (MainWindow.IsElevated)
+        {
+            window?.ShowToast("Snap is not available in the Admin Instance");
+            return;
+        }
+
+        if (!Services.Settings.Snap.Enabled)
+        {
+            if (_snapAsked)
+            {
+                window?.ShowToast("Snap is off");
+                return;
+            }
+
+            _snapAsked = true;
+            var answer = Native.MessageBoxW(0, "Snap is off. Turn it on to take screenshots with " + Services.Settings.Snap.GlobalHotkey + "?\n\nPollux then keeps running in the background.", "Pollux", Native.MB_YESNO | Native.MB_ICONQUESTION | Native.MB_SETFOREGROUND | Native.MB_TOPMOST);
+            if (answer != Native.IDYES) return;
+            Services.Settings.Snap.Enabled = true;
+            Services.SaveSettings();
+        }
+
+        void Start() => SnapService.Run(this, mode);
+
+        if ((window is null && !settle) || mode == SnapMode.ClipboardImage)
+        {
+            Start();
+            return;
+        }
+
+        var timer = Dispatcher.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(250);
+        timer.IsRepeating = false;
+        timer.Tick += (_, _) => Start();
+        timer.Start();
     }
 
     private void TryHotkey(string chord, Action action)

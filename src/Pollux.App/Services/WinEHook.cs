@@ -2,30 +2,32 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Dispatching;
 using Pollux.App.Interop;
+using Pollux.Core.Commands;
 
 namespace Pollux.App.Services;
 
 /// <summary>
-/// Opt-in Win+E and Win+V takeover via one low-level keyboard hook (works without admin; neither can be taken with RegisterHotKey).
-/// Turning both off removes the hook, which fully restores Windows' behaviour.
+/// Opt-in takeover of Windows keys via one low-level keyboard hook (works without admin; none of them can be taken
+/// with RegisterHotKey): Win+E, Win+V, and for Snap Win+Shift+S and the Print key. Which key is taken is decided in
+/// Core (<see cref="KeyTakeover"/>). Turning all off removes the hook, which fully restores Windows' behaviour.
 /// </summary>
 internal static unsafe class WinEHook
 {
-    private const uint VK_E = 0x45, VK_V = 0x56, VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_MASK = 0xE8;
+    private const uint VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_MASK = 0xE8;
     private static nint _hook;
     private static DispatcherQueue? _dispatcher;
-    private static Action? _onWinE;
-    private static Action? _onWinV;
+    private static Takeovers _on;
+    private static Action<TakenKey>? _handler;
 
     public static bool IsActive => _hook != 0;
 
-    /// <summary>Sets the handlers; a null handler leaves that key to Windows. The hook exists only while one is set.</summary>
-    public static void Apply(DispatcherQueue dispatcher, Action? onWinE, Action? onWinV)
+    /// <summary>Takes the keys in <paramref name="on"/> and hands them to <paramref name="handler"/> on the UI thread. The hook exists only while one is on.</summary>
+    public static void Apply(DispatcherQueue dispatcher, Takeovers on, Action<TakenKey> handler)
     {
         _dispatcher = dispatcher;
-        _onWinE = onWinE;
-        _onWinV = onWinV;
-        if (onWinE is null && onWinV is null)
+        _on = on;
+        _handler = handler;
+        if (on == Takeovers.None)
         {
             Disable();
         }
@@ -37,8 +39,8 @@ internal static unsafe class WinEHook
 
     public static void Disable()
     {
-        _onWinE = null;
-        _onWinV = null;
+        _on = Takeovers.None;
+        _handler = null;
         if (_hook != 0)
         {
             Native.UnhookWindowsHookEx(_hook);
@@ -49,18 +51,22 @@ internal static unsafe class WinEHook
     [UnmanagedCallersOnly]
     private static nint HookProc(int code, nint wParam, nint lParam)
     {
-        if (code >= 0 && (wParam == Native.WM_KEYDOWN || wParam == Native.WM_SYSKEYDOWN))
+        var down = wParam == Native.WM_KEYDOWN || wParam == Native.WM_SYSKEYDOWN;
+        var up = wParam == Native.WM_KEYUP || wParam == Native.WM_SYSKEYUP;
+        if (code >= 0 && (down || up))
         {
             var k = (Native.KBDLLHOOKSTRUCT*)lParam;
-            var action = k->vkCode == VK_E ? _onWinE : k->vkCode == VK_V ? _onWinV : null;
-            if (action is not null && WinDown() && !OtherModifiersDown())
+            var taken = KeyTakeover.Decide(k->vkCode, up, new HeldModifiers(WinDown(), Down(0x10), Down(0x11), Down(0x12)), _on);
+            if (taken != TakenKey.None)
             {
-                // Tell the shell a non-Win key was pressed, so releasing Win does not open the Start menu.
-                var inputs = stackalloc Native.INPUT[2];
-                inputs[0] = new Native.INPUT { type = 1, ki = new Native.KEYBDINPUT { wVk = (ushort)VK_MASK } };
-                inputs[1] = new Native.INPUT { type = 1, ki = new Native.KEYBDINPUT { wVk = (ushort)VK_MASK, dwFlags = 2 } };
-                Native.SendInput(2, inputs, sizeof(Native.INPUT));
-                _dispatcher?.TryEnqueue(() => action());
+                if (taken != TakenKey.SwallowOnly)
+                {
+                    // Tell the shell a non-Win key was pressed, so releasing Win does not open the Start menu.
+                    if (WinDown()) MaskWin();
+                    var handler = _handler;
+                    _dispatcher?.TryEnqueue(() => handler?.Invoke(taken));
+                }
+
                 return 1;
             }
         }
@@ -68,9 +74,16 @@ internal static unsafe class WinEHook
         return Native.CallNextHookEx(_hook, code, wParam, lParam);
     }
 
-    // GetAsyncKeyState: the physical state. GetKeyState would read this thread's snapshot, which is stale while Pollux is in the background.
-    private static bool WinDown() => (Native.GetAsyncKeyState((int)VK_LWIN) & 0x8000) != 0 || (Native.GetAsyncKeyState((int)VK_RWIN) & 0x8000) != 0;
+    private static void MaskWin()
+    {
+        var inputs = stackalloc Native.INPUT[2];
+        inputs[0] = new Native.INPUT { type = 1, ki = new Native.KEYBDINPUT { wVk = (ushort)VK_MASK } };
+        inputs[1] = new Native.INPUT { type = 1, ki = new Native.KEYBDINPUT { wVk = (ushort)VK_MASK, dwFlags = 2 } };
+        Native.SendInput(2, inputs, sizeof(Native.INPUT));
+    }
 
-    private static bool OtherModifiersDown() =>
-        (Native.GetAsyncKeyState(0x10) & 0x8000) != 0 || (Native.GetAsyncKeyState(0x11) & 0x8000) != 0 || (Native.GetAsyncKeyState(0x12) & 0x8000) != 0;
+    // GetAsyncKeyState: the physical state. GetKeyState would read this thread's snapshot, which is stale while Pollux is in the background.
+    private static bool Down(int vk) => (Native.GetAsyncKeyState(vk) & 0x8000) != 0;
+
+    private static bool WinDown() => Down((int)VK_LWIN) || Down((int)VK_RWIN);
 }

@@ -30,16 +30,20 @@ internal static class WebHost
 
     /// <summary>Creates one of Pollux's own pages (terminal, notes, editor, Copilot Panel).</summary>
     public static Task<CoreWebView2> InitializeAsync(WebView2 view, string page, WebViewKind kind) =>
-        InitializeAsync(view, page, kind, null);
+        InitializeAsync(view, page, kind, null, null);
+
+    /// <summary>Creates the Snap Board; its request handler answers https://pollux.snap/image with the PNG <paramref name="snap"/> returns.</summary>
+    public static Task<CoreWebView2> InitializeSnapBoardAsync(WebView2 view, Func<byte[]?> snap) =>
+        InitializeAsync(view, "snap.html", WebViewKind.SnapBoard, null, snap);
 
     /// <summary>
     /// Creates the sandboxed file preview: scripts and web messages off, and its request handler serves only the
     /// file <paramref name="currentFile"/> returns at request time, with the preview policy's CSP. No folder is mapped.
     /// </summary>
     public static Task<CoreWebView2> InitializeFilePreviewAsync(WebView2 view, Func<string?> currentFile) =>
-        InitializeAsync(view, "blank.html", WebViewKind.FilePreview, currentFile);
+        InitializeAsync(view, "blank.html", WebViewKind.FilePreview, currentFile, null);
 
-    private static async Task<CoreWebView2> InitializeAsync(WebView2 view, string page, WebViewKind kind, Func<string?>? currentFile)
+    private static async Task<CoreWebView2> InitializeAsync(WebView2 view, string page, WebViewKind kind, Func<string?>? currentFile, Func<byte[]?>? snap)
     {
         await view.EnsureCoreWebView2Async(await SharedEnvironment());
         var core = view.CoreWebView2;
@@ -78,6 +82,15 @@ internal static class WebHost
         core.WebResourceRequested += (_, e) =>
         {
             var uri = e.Request.Uri;
+            if (snap is not null && WebViewPolicy.IsSnapImage(uri, kind))
+            {
+                var png = snap();
+                e.Response = png is null
+                    ? core.Environment.CreateWebResourceResponse(null, 404, "Not Found", "")
+                    : core.Environment.CreateWebResourceResponse(new MemoryStream(png, writable: false).AsRandomAccessStream(), 200, "OK", "Content-Type: image/png\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: https://pollux.assets");
+                return;
+            }
+
             if (kind == WebViewKind.FilePreview)
             {
                 var headers = e.Request.Headers;

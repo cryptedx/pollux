@@ -17,6 +17,9 @@ public enum WebViewKind
 
     /// <summary>Sandboxed view of Quick Look and the Preview Pane for HTML, SVG, PDF and media.</summary>
     FilePreview,
+
+    /// <summary>Snap Board (snap.html): marks up a Snap on a canvas.</summary>
+    SnapBoard,
 }
 
 /// <summary>
@@ -64,6 +67,7 @@ public static class WebViewPolicy
             WebViewKind.Notes => "notes.html",
             WebViewKind.CodePreview => "preview.html",
             WebViewKind.CopilotPanel => "copilot.html",
+            WebViewKind.SnapBoard => "snap.html",
             _ => null,
         };
         return page is not null
@@ -87,9 +91,24 @@ public static class WebViewPolicy
 
     /// <summary>Whether a resource request of <paramref name="view"/> may proceed; everything else is answered with an error.</summary>
     public static bool IsAllowedRequest(string uri, WebViewKind view, string? currentFile) =>
-        uri.StartsWith("blob:", StringComparison.OrdinalIgnoreCase)
+        IsSnapImage(uri, view)
+        || uri.StartsWith("blob:", StringComparison.OrdinalIgnoreCase)
         || uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
         || IsAllowedNavigation(uri, view, currentFile);
+
+    /// <summary>The host the Snap Board loads the current Snap from; not mapped to a folder, the host answers it itself.</summary>
+    public const string SnapHost = "pollux.snap";
+
+    /// <summary>
+    /// True when <paramref name="uri"/> is the address the Snap Board loads the current Snap from
+    /// (<c>https://pollux.snap/image</c>, any query); the host answers it with the PNG. No other view gets it.
+    /// </summary>
+    public static bool IsSnapImage(string uri, WebViewKind view) =>
+        view == WebViewKind.SnapBoard
+        && Uri.TryCreate(uri, UriKind.Absolute, out var u)
+        && u.Scheme == Uri.UriSchemeHttps && u.IsDefaultPort && u.UserInfo.Length == 0
+        && string.Equals(u.Host, SnapHost, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(u.AbsolutePath, "/image", StringComparison.Ordinal);
 
     private static bool IsAssets(Uri uri) =>
         uri.Scheme == Uri.UriSchemeHttps && uri.IsDefaultPort && uri.UserInfo.Length == 0

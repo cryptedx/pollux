@@ -30,7 +30,7 @@ Automated checks:
 - `dotnet list package --vulnerable --include-transitive`: no known vulnerable packages (Pollux.Core, Pollux.Copilot; Pollux.App needs a Windows host).
 - Secret scan of tracked files and full git history: nothing found.
 - Network API scan of `src/`: no network calls in Pollux's own code.
-- Vendored JS: Monaco 0.57.0, xterm.js 6.0.0, no known CVEs.
+- Vendored JS: Monaco 0.57.0, xterm.js 6.0.0, jsQR 1.4.0 (Snap Board QR codes), no known CVEs.
 
 ### Findings
 

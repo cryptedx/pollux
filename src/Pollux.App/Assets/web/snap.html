@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://pollux.assets; style-src 'self' 'unsafe-inline' https://pollux.assets; img-src https://pollux.assets https://pollux.snap data: blob:">
+<title>Snap Board</title>
+<style>
+  :root { --bg:#ececec; --rail:#f7f7f7; --fg:#1b1b1b; --muted:#6b6b6b; --line:#d9d9d9; --hover:rgba(0,0,0,.06); --accent:#0f6cbd; }
+  :root.dark { --bg:#161616; --rail:#232323; --fg:#e9e9e9; --muted:#9a9a9a; --line:#3a3a3a; --hover:rgba(255,255,255,.07); --accent:#4cc2ff; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:12px/1.4 'Segoe UI Variable Text','Segoe UI',sans-serif; user-select:none; }
+  body { display:flex; overflow:hidden; }
+  nav { flex:none; width:44px; overflow-y:auto; scrollbar-width:none; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 0; background:var(--rail); border-right:1px solid var(--line); }
+  nav .sep { width:24px; height:1px; background:var(--line); margin:6px 0; }
+  nav button { width:32px; height:32px; display:grid; place-items:center; border:0; border-radius:6px; background:transparent; color:var(--fg); cursor:pointer; position:relative; padding:0; }
+  nav button:hover { background:var(--hover); }
+  nav button.on { background:var(--hover); color:var(--accent); box-shadow:inset 2px 0 0 var(--accent); }
+  nav button svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+  nav button kbd { position:absolute; right:2px; bottom:1px; font:9px 'Cascadia Mono',Consolas,monospace; color:var(--muted); }
+  nav .swatch { width:18px; height:18px; border-radius:50%; border:1px solid var(--line); }
+  nav button.on .swatch { outline:2px solid var(--accent); outline-offset:2px; }
+  nav .dot { border-radius:50%; background:currentColor; }
+  main { flex:1; position:relative; overflow:auto; display:grid; place-items:center; }
+  canvas { display:block; box-shadow:0 1px 6px rgba(0,0,0,.25); cursor:crosshair; }
+  aside { flex:none; width:300px; display:flex; flex-direction:column; background:var(--rail); border-left:1px solid var(--line); }
+  aside[hidden] { display:none; }
+  aside header { display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line); }
+  aside header b { font-weight:600; margin-right:auto; }
+  aside header span { color:var(--muted); font:11px 'Cascadia Mono',Consolas,monospace; }
+  aside button { font:inherit; color:var(--fg); background:transparent; border:1px solid var(--line); border-radius:5px; padding:2px 10px; cursor:pointer; }
+  aside button:hover { border-color:var(--accent); color:var(--accent); }
+  aside textarea { flex:1; margin:0; padding:10px; border:0; outline:none; resize:none; background:transparent; color:var(--fg); font:12px/1.5 'Segoe UI Variable Text','Segoe UI',sans-serif; user-select:text; }
+  aside p { margin:10px; color:var(--muted); }
+  #qr { position:absolute; top:10px; right:10px; max-width:min(420px, 60%); display:flex; align-items:center; gap:8px; padding:4px 6px 4px 10px; border-radius:14px; background:var(--rail); border:1px solid var(--accent); box-shadow:0 2px 8px rgba(0,0,0,.25); }
+  #qr[hidden] { display:none; }
+  #qr span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:11px 'Cascadia Mono',Consolas,monospace; }
+  #qr b { color:var(--accent); font-weight:600; }
+  #qr button { font:inherit; font-size:11px; color:var(--fg); background:transparent; border:1px solid var(--line); border-radius:10px; padding:1px 8px; cursor:pointer; }
+  #qr button:hover { border-color:var(--accent); color:var(--accent); }
+  aside .row { display:flex; align-items:center; gap:8px; padding:8px 10px; }
+  aside .row label { flex:1; color:var(--muted); }
+  aside input[type=range] { flex:2; accent-color:var(--accent); }
+  aside .swatches { display:flex; flex-wrap:wrap; gap:6px; padding:8px 10px; }
+  aside .swatch { width:28px; height:28px; padding:0; border-radius:6px; border:1px solid var(--line); cursor:pointer; }
+  aside .swatch.on, aside input[type=color].on { outline:2px solid var(--accent); outline-offset:2px; }
+  aside input[type=color] { width:28px; height:28px; padding:0; border:1px solid var(--line); border-radius:6px; background:transparent; cursor:pointer; }
+  textarea.label { position:absolute; margin:0; padding:0; border:1px dashed var(--accent); background:transparent; outline:none; resize:none; overflow:hidden; white-space:pre; font-family:'Segoe UI Variable Display','Segoe UI',sans-serif; font-weight:600; line-height:1.2; }
+</style>
+</head>
+<body>
+<nav id="rail" aria-label="Tools"></nav>
+<main id="stage"><canvas id="board"></canvas><div id="qr" hidden><b>QR</b><span id="qrText"></span><button id="qrCopy" title="Copy the QR code's content">Copy</button></div></main>
+<aside id="framePanel" hidden aria-label="Backdrop">
+  <header><b>Backdrop</b><button id="frameClose" title="Close (Esc)">×</button></header>
+  <div class="row"><label for="frameOn">Frame the Snap</label><input type="checkbox" id="frameOn"></div>
+  <div class="swatches" id="frameSwatches"><input type="color" id="frameColor" title="Own colour"></div>
+  <div class="row"><label for="framePadding">Padding</label><input type="range" id="framePadding" min="0" max="160" step="4"></div>
+  <div class="row"><label for="frameRadius">Corners</label><input type="range" id="frameRadius" min="0" max="40" step="1"></div>
+  <div class="row"><label for="frameShadow">Shadow</label><input type="checkbox" id="frameShadow"></div>
+</aside>
+<aside id="textPanel" hidden aria-label="Recognised text">
+  <header><b>Text</b><span id="textLanguage"></span><button id="textCopy" title="Copy all text">Copy</button><button id="textClose" title="Close (Esc)">×</button></header>
+  <p id="textProblem" hidden></p>
+  <textarea id="textBody" readonly spellcheck="false"></textarea>
+</aside>
+<script src="snap.js"></script>
+</body>
+</html>

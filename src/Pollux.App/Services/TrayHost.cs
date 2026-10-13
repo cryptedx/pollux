@@ -13,6 +13,7 @@ internal sealed unsafe class TrayHost : IDisposable
 {
     private const uint TrayCallback = Native.WM_APP + 1;
     private const int MenuNewWindow = 1, MenuDownloads = 2, MenuNotes = 3, MenuSettings = 4, MenuUpdates = 5, MenuClipboardPause = 6, MenuQuit = 9;
+    private const int MenuSnapArea = 20, MenuSnapWindow = 21, MenuSnapScreen = 22, MenuSnapDelay = 23, MenuSnapHistory = 24, MenuSnapRelease = 25;
 
     private static TrayHost? _instance;
     private readonly DispatcherQueue _dispatcher;
@@ -37,6 +38,9 @@ internal sealed unsafe class TrayHost : IDisposable
     public event Action? SettingsRequested;
     public event Action? UpdatesRequested;
     public event Action? ClipboardPauseRequested;
+    public event Action<SnapMode>? SnapRequested;
+    public event Action? SnapHistoryRequested;
+    public event Action? SnapReleaseRequested;
     public event Action? QuitRequested;
 
     /// <summary>Shows "Pause Clipboard History" in the menu while the Clipboard History is on.</summary>
@@ -44,6 +48,9 @@ internal sealed unsafe class TrayHost : IDisposable
 
     /// <summary>Checkmark of "Pause Clipboard History".</summary>
     public bool ClipboardPaused { get; set; }
+
+    /// <summary>Snap is on: the menu has a Snap submenu.</summary>
+    public bool SnapOn { get; set; }
 
     public nint Handle => _hwnd;
 
@@ -178,6 +185,20 @@ internal sealed unsafe class TrayHost : IDisposable
         Native.AppendMenuW(menu, Native.MF_STRING, MenuDownloads, "Downloads");
         Native.AppendMenuW(menu, Native.MF_STRING, MenuNotes, "Notes");
         Native.AppendMenuW(menu, Native.MF_STRING, MenuUpdates, "App updates (winget)…");
+        nint snap = 0;
+        if (SnapOn)
+        {
+            snap = Native.CreatePopupMenu();
+            Native.AppendMenuW(snap, Native.MF_STRING, MenuSnapArea, "Area");
+            Native.AppendMenuW(snap, Native.MF_STRING, MenuSnapWindow, "Window");
+            Native.AppendMenuW(snap, Native.MF_STRING, MenuSnapScreen, "Screen");
+            Native.AppendMenuW(snap, Native.MF_STRING, MenuSnapDelay, "Area after delay");
+            Native.AppendMenuW(snap, Native.MF_SEPARATOR, 0, null);
+            Native.AppendMenuW(snap, Native.MF_STRING, MenuSnapHistory, "Open history");
+            Native.AppendMenuW(snap, Native.MF_STRING, MenuSnapRelease, "Release Floats");
+            Native.AppendMenuW(menu, Native.MF_POPUP, (nuint)snap, "Snap");
+        }
+
         if (ClipboardHistoryOn)
         {
             Native.AppendMenuW(menu, Native.MF_STRING | (ClipboardPaused ? Native.MF_CHECKED : 0), MenuClipboardPause, "Pause Clipboard History");
@@ -189,7 +210,17 @@ internal sealed unsafe class TrayHost : IDisposable
         Native.GetCursorPos(out var pt);
         Native.SetForegroundWindow(_hwnd);
         var cmd = Native.TrackPopupMenuEx(menu, Native.TPM_RETURNCMD | Native.TPM_RIGHTBUTTON, pt.X, pt.Y, _hwnd, 0);
-        Native.DestroyMenu(menu);
+        Native.DestroyMenu(menu); // destroys the submenu with it
+        switch (cmd)
+        {
+            case MenuSnapArea: Post(() => SnapRequested?.Invoke(SnapMode.Area)); return;
+            case MenuSnapWindow: Post(() => SnapRequested?.Invoke(SnapMode.Window)); return;
+            case MenuSnapScreen: Post(() => SnapRequested?.Invoke(SnapMode.Screen)); return;
+            case MenuSnapDelay: Post(() => SnapRequested?.Invoke(SnapMode.AreaAfterDelay)); return;
+            case MenuSnapHistory: Post(SnapHistoryRequested); return;
+            case MenuSnapRelease: Post(SnapReleaseRequested); return;
+        }
+
         Post(cmd switch
         {
             MenuNewWindow => OpenWindowRequested,

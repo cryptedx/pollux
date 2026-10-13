@@ -164,6 +164,13 @@ internal sealed partial class SettingsWindow : Window
         return c;
     };
 
+    private static readonly string[] SnapAfterCaptureNames = ["Board", "Clipboard", "Save", "Float"];
+
+    private static string SnapAfterCaptureName(SnapAfterCapture v) => v == SnapAfterCapture.AsFloat ? "Float" : v.ToString();
+
+    private static SnapAfterCapture SnapAfterCaptureFromName(string v) =>
+        v == "Float" ? SnapAfterCapture.AsFloat : Enum.TryParse<SnapAfterCapture>(v, out var parsed) ? parsed : SnapAfterCapture.Board;
+
     private Func<FrameworkElement> Options(string[] options, Func<string> get, Action<string> set) => () =>
     {
         var c = new ComboBox { ItemsSource = options, SelectedItem = options.FirstOrDefault(o => o.Equals(get(), StringComparison.OrdinalIgnoreCase)) ?? options[0], MinWidth = 160 };
@@ -210,7 +217,7 @@ internal sealed partial class SettingsWindow : Window
             new("Appearance", "appearance.monoFont", "Monospace font", "Paths, sizes, status bar and palette.", Text(() => S.Appearance.MonoFont, v => S.Appearance.MonoFont = v)),
             new("Appearance", "appearance.fontSize", "Font size", "", Number(() => S.Appearance.FontSize, v => S.Appearance.FontSize = v, 9, 24, 0.5)),
 
-            new("Startup", "app.resident", "Keep running in the background", "Tray icon; windows open instantly. Off: Pollux quits when the last window closes (unless the Clipboard History is on).", Bool(() => S.App.Resident, v => S.App.Resident = v)),
+            new("Startup", "app.resident", "Keep running in the background", "Tray icon; windows open instantly. Off: Pollux quits when the last window closes (unless the Clipboard History or Snap is on).", Bool(() => S.App.Resident, v => S.App.Resident = v)),
             new("Startup", "app.startWithWindows", "Start with Windows", "Starts hidden in the tray at login.", Bool(() => S.App.StartWithWindows, v => S.App.StartWithWindows = v)),
             new("Startup", "app.restoreWindows", "Restore windows", "Reopen windows with their panes and tabs.", Bool(() => S.App.RestoreWindows, v => S.App.RestoreWindows = v)),
             new("Startup", "app.takeOverWinE", "Open Pollux with Win+E", "Replaces Explorer's Win+E while Pollux runs. Turn off to restore Explorer.", Bool(() => S.App.TakeOverWinE, v => S.App.TakeOverWinE = v)),
@@ -285,7 +292,7 @@ internal sealed partial class SettingsWindow : Window
         _all.AddRange(ExtraSettings());
     }
 
-    /// <summary>Settings for Notes, Downloads, Updates, Inbox and the Clipboard History.</summary>
+    /// <summary>Settings for Notes, Downloads, Updates, Inbox, the Clipboard History and Snap.</summary>
     private IEnumerable<Setting> ExtraSettings() =>
     [
         new("Notes", "notes.folder", "Notes folder", "Empty = Documents\\Pollux\\Notes. Plain Markdown files.", Text(() => S.Notes.Folder, v => S.Notes.Folder = v, @"Documents\Pollux\Notes")),
@@ -320,6 +327,16 @@ internal sealed partial class SettingsWindow : Window
         new("Clipboard", "clipboard.maxClips", "Keep up to N Clips", "Older Clips rotate out; Kept Clips never do. 0 = no limit.", Number(() => S.Clipboard.MaxClips, v => S.Clipboard.MaxClips = (int)v, 0, 10000, 50)),
         new("Clipboard", "clipboard.maxAgeDays", "Keep Clips for (days)", "Whichever limit hits first. 0 = no limit.", Number(() => S.Clipboard.MaxAgeDays, v => S.Clipboard.MaxAgeDays = (int)v, 0, 3650)),
         new("Clipboard", "clipboard.pasteAsFile", "Ctrl+V creates a file", "In a folder, Ctrl+V with text or an image (and no files) on the clipboard creates a .txt or .png. Files still paste as a Transfer.", Bool(() => S.Clipboard.PasteAsFile, v => S.Clipboard.PasteAsFile = v)),
+        new("Snap", "snap.enabled", "Take Snaps", "Off by default. Screenshots of an area with a global hotkey, saved as PNG files on this PC only. While on, Pollux keeps running in the background even if that setting is off. Not available in the Admin Instance.", Bool(() => S.Snap.Enabled, v => S.Snap.Enabled = v)),
+        new("Snap", "snap.globalHotkey", "Global hotkey: Snap an area", "Works from any app while Pollux runs.", Text(() => S.Snap.GlobalHotkey, v => S.Snap.GlobalHotkey = v, "win+alt+s")),
+        new("Snap", "snap.takeOverWinShiftS", "Snap with Win+Shift+S", "Win+Shift+S starts an area Snap instead of Windows' snipping tool. Turn off to give the key back. Nothing in Windows' settings is changed.", Bool(() => S.Snap.TakeOverWinShiftS, v => S.Snap.TakeOverWinShiftS = v)),
+        new("Snap", "snap.takeOverPrintKey", "Snap with the Print key", "Print starts an area Snap, Alt+Print a window Snap. Ctrl+Print and Shift+Print stay with Windows. Turn off to give the key back.", Bool(() => S.Snap.TakeOverPrintKey, v => S.Snap.TakeOverPrintKey = v)),
+        new("Snap", "snap.afterCapture", "After a Snap", "Board: copy and open the Snap Board. Clipboard: only copy. Save: only save the file. Float: keep it on screen.", Options(SnapAfterCaptureNames, () => SnapAfterCaptureName(S.Snap.AfterCapture), v => S.Snap.AfterCapture = SnapAfterCaptureFromName(v))),
+        new("Snap", "snap.autoSave", "Save every Snap", "Writes each Snap as a PNG into the Snaps folder.", Bool(() => S.Snap.AutoSave, v => S.Snap.AutoSave = v)),
+        new("Snap", "snap.delaySeconds", "Delay for \"Area After Delay\" (seconds)", "", Number(() => S.Snap.DelaySeconds, v => S.Snap.DelaySeconds = (int)v, 1, 60)),
+        new("Snap", "snap.ocrLanguage", "Text recognition language", "Language tag such as de-DE or en-US. Empty = the first Windows display language that has text recognition installed. Recognition runs in Windows, on this PC only.", Text(() => S.Snap.OcrLanguage, v => S.Snap.OcrLanguage = v.Trim(), "de-DE")),
+        new("Snap", "snap.keepDays", "Keep Snaps for (days)", "Snaps taken longer ago go to the Recycle Bin, checked at start and once a day. Only files named like a Snap are touched. 0 = keep them all.", Number(() => S.Snap.KeepDays, v => S.Snap.KeepDays = (int)v, 0, 3650)),
+        new("Snap", "snap.folder", "Snaps folder", "Empty = Pictures\\Snaps.", Text(() => S.Snap.Folder, v => S.Snap.Folder = v, @"Pictures\Snaps")),
     ];
 
     // ---------------- keyboard ----------------

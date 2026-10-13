@@ -52,6 +52,19 @@ public sealed class WebMessage
         _root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
     /// <summary>
+    /// The base64 string field <paramref name="name"/> decoded; null when missing, not a string, not valid base64, empty,
+    /// or larger than <paramref name="maxBytes"/> once decoded (the size is checked before decoding).
+    /// </summary>
+    public byte[]? Bytes(string name, int maxBytes)
+    {
+        var text = Text(name);
+        if (string.IsNullOrEmpty(text) || (long)text.Length / 4 * 3 > (long)maxBytes + 2) return null;
+        var buffer = new byte[(text.Length / 4 * 3) + 3];
+        if (!Convert.TryFromBase64String(text, buffer, out var written) || written == 0 || written > maxBytes) return null;
+        return buffer[..written];
+    }
+
+    /// <summary>
     /// The number field <paramref name="name"/> as a terminal column or row count, clamped to
     /// 1..<see cref="MaxTerminalSize"/>; null when missing or not a number. Never wraps like a cast to short.
     /// </summary>

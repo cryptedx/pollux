@@ -161,7 +161,7 @@ internal static class CommandCatalog
         new("app.openConfigFolder", "Preferences: Open Config Folder"),
         new("app.quit", "Pollux: Quit (stop background process)"),
 
-        // Beyond the file manager: Downloads Stack, Notes, Clipboard History, updates, Admin Instance, Inbox.
+        // Beyond the file manager: Downloads Stack, Notes, Clipboard History, Snap, updates, Admin Instance, Inbox.
         new("downloads.show", "Downloads: Show Downloads Stack", "ctrl+shift+o"),
         new("notes.show", "Notes: Open Notes"),
         new("notes.new", "Notes: New Note", "ctrl+alt+m"),
@@ -169,6 +169,15 @@ internal static class CommandCatalog
         new("clipboard.clear", "Clipboard: Clear History"),
         new("clipboard.pause", "Clipboard: Pause Capture"),
         new("clipboard.resume", "Clipboard: Resume Capture"),
+        new("snap.area", "Snap: Area"),
+        new("snap.window", "Snap: Window"),
+        new("snap.screen", "Snap: Screen"),
+        new("snap.repeat", "Snap: Repeat Last Area"),
+        new("snap.areaAfterDelay", "Snap: Area After Delay"),
+        new("snap.copyText", "Snap: Copy Text"),
+        new("snap.openClipboardImage", "Snap: Open Image from Clipboard"),
+        new("snap.openHistory", "Snap: Open History"),
+        new("snap.releaseFloats", "Snap: Release Floats"),
         new("updates.show", "Updates: Show App Updates (winget)…"),
         new("app.restartAsAdmin", "Pollux: Open Admin Instance Here (elevated)"),
         new("inbox.open", "Inbox: Open Desktop as Inbox"),

@@ -9,7 +9,7 @@ using Pollux.Core.Inbox;
 
 namespace Pollux.App.Services;
 
-/// <summary>Features beyond the core file manager: Downloads Stack, Notes, updates, Admin Instance, Inbox, Workspaces.</summary>
+/// <summary>Features beyond the core file manager: Downloads Stack, Notes, Snap, updates, Admin Instance, Inbox, Workspaces.</summary>
 internal static class ExtraFeatures
 {
     private static DownloadsStack? _downloads;
@@ -28,6 +28,16 @@ internal static class ExtraFeatures
         ["clipboard.clear"] = (app, window) => WithClipboardHistory(app, window, s => s.ClearHistory()),
         ["clipboard.pause"] = (app, window) => WithClipboardHistory(app, window, s => s.SetPaused(true)),
         ["clipboard.resume"] = (app, window) => WithClipboardHistory(app, window, s => s.SetPaused(false)),
+        // Through the App: while Snap is off it asks once whether to turn it on.
+        ["snap.area"] = (app, window) => app.StartSnap(window),
+        ["snap.window"] = (app, window) => app.StartSnap(window, SnapMode.Window),
+        ["snap.screen"] = (app, window) => app.StartSnap(window, SnapMode.Screen),
+        ["snap.repeat"] = (app, window) => app.StartSnap(window, SnapMode.Repeat),
+        ["snap.areaAfterDelay"] = (app, window) => app.StartSnap(window, SnapMode.AreaAfterDelay),
+        ["snap.copyText"] = (app, window) => app.StartSnap(window, SnapMode.CopyText),
+        ["snap.openClipboardImage"] = (app, window) => app.StartSnap(window, SnapMode.ClipboardImage),
+        ["snap.openHistory"] = (app, window) => SnapService.OpenHistory(app, window),
+        ["snap.releaseFloats"] = (_, _) => SnapService.ReleaseFloats(),
         ["updates.show"] = (app, _) => ShowUpdates(app),
         ["app.restartAsAdmin"] = (_, window) => OpenAdminInstance(window),
         ["inbox.open"] = (_, window) => window.Execute("nav.desktop"),
@@ -47,6 +57,7 @@ internal static class ExtraFeatures
         _downloads?.Close();
         _clipboardStack?.Close();
         ClipboardPasteBack.Shutdown();
+        SnapService.Shutdown();
         _notes?.SaveNow();
         _notes?.Close();
         _updates?.Close();

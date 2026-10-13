@@ -61,6 +61,10 @@ public static class SettingsStore
         s.Copilot.GuardRules.UntrustedPaths ??= [];
         s.Clipboard ??= new();
         s.Clipboard.ExcludeProcesses ??= [];
+        s.Snap ??= new();
+        s.Snap.Folder ??= "";
+        s.Snap.OcrLanguage ??= "";
+        s.Snap.GlobalHotkey ??= new SnapSettings().GlobalHotkey;
         s.Files.OperationEngine ??= "pollux";
         s.Appearance.UiFont ??= "Segoe UI Variable Text";
         s.Appearance.MonoFont ??= "Cascadia Mono";

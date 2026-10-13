@@ -240,6 +240,7 @@ public sealed class PreviewPolicyTests
     [DataRow("https://pollux.assets/notes.html", WebViewKind.Notes)]
     [DataRow("https://pollux.assets/preview.html", WebViewKind.CodePreview)]
     [DataRow("https://POLLUX.ASSETS/copilot.html", WebViewKind.CopilotPanel)]
+    [DataRow("https://pollux.assets/snap.html", WebViewKind.SnapBoard)]
     public void OwnPagesAreAcceptedAsMessageSources(string source, WebViewKind view) =>
         Assert.IsTrue(WebViewPolicy.IsOwnSource(source, view));
 
@@ -258,6 +259,8 @@ public sealed class PreviewPolicyTests
     [DataRow(null, WebViewKind.CopilotPanel)]
     [DataRow("https://pollux.preview/evil.html", WebViewKind.FilePreview)]
     [DataRow("https://pollux.assets/blank.html", WebViewKind.FilePreview)]
+    [DataRow("https://pollux.assets/notes.html", WebViewKind.SnapBoard)]
+    [DataRow("https://pollux.assets/snap.html", WebViewKind.Notes)]
     public void OtherMessageSourcesAreRejected(string? source, WebViewKind view) =>
         Assert.IsFalse(WebViewPolicy.IsOwnSource(source, view));
 
